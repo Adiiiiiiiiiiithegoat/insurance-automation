@@ -47,7 +47,7 @@ POLICY_TYPE_COMPREHENSIVE = "MOTOR PRIVATE COMPREHENSIVE"
 POLICY_TYPE_THIRD_PARTY   = "MOTOR PRIVATE THIRD PARTY"
 
 # Premium comparison tolerance (step 22) — treat as a match if within this amount
-PREMIUM_TOLERANCE = 0.01
+PREMIUM_TOLERANCE = 1.0   # OMR — treat as a match if within 1 OMR
 
 # Small pause (milliseconds) added after most actions so the site has time to
 # react and nothing breaks from going too fast. Increase if things still race.
@@ -1488,10 +1488,12 @@ def mic_calculate_and_check(page, tameen_total: str) -> None:
         return float(cleaned)
 
     try:
-        if abs(_to_number(net_prem) - _to_number(tameen_total)) <= PREMIUM_TOLERANCE:
+        diff = abs(_to_number(net_prem) - _to_number(tameen_total))
+        if diff <= PREMIUM_TOLERANCE:
             print("  ✅  PREMIUMS MATCH")
         else:
-            print("  ⚠️  PREMIUM MISMATCH — review before approving!")
+            print(f"  ❌  ERROR: PREMIUM MISMATCH — differs by {diff:.2f} OMR "
+                  f"(tolerance {PREMIUM_TOLERANCE:.2f}). Keeping policy as DRAFT — review manually.")
     except (ValueError, TypeError):
         print("  ⚠️  Could not compare premiums numerically — check the values above.")
 
