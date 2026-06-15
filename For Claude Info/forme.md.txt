@@ -1,0 +1,5 @@
+Based on everything we did in this conversation, give me an updated 
+PROJECT_STATE.md file. Keep the same format as the current one. 
+Update the DONE section, CURRENTLY WORKING ON, NEXT UP, KNOWN ISSUES, 
+and SCRIPTS ON SERVER sections to reflect exactly where we are now. 
+Give me the complete file ready to copy and paste, nothing else.

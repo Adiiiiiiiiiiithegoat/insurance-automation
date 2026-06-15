@@ -1,0 +1,272 @@
+# Motor Insurance Automation — Project File
+
+> Hand this file to any new Claude session (Opus or otherwise) at the start of a
+> conversation. It explains the company, the goal, the technical stack, the exact
+> state of the code today, and what comes next — so no time is wasted
+> re-explaining context.
+
+---
+
+## 1. WHO I AM (read this first)
+
+- I am a **non-technical solo developer**. No coding background.
+- **Claude writes 100% of the code.** I copy it, run it, and paste any errors back.
+- I use **Claude Pro chat** for all development (not Claude Code).
+- How to work with me:
+  - Give instructions **one step at a time**, not everything at once.
+  - Explain code in **plain English**, not technical jargon.
+  - When something breaks, I will paste the **exact error message**.
+  - Do not assume I know any technical terminology.
+  - Start each new session with a **brief context summary** so I don't waste messages.
+  - I have **Claude Pro usage limits** (roughly 45 messages / 5 hours, tighter on
+    weekday daytimes). Heavy debugging is best done evenings/weekends.
+
+---
+
+## 2. THE COMPANY & THE GOAL
+
+Online motor-insurance **broker** based in Oman. Works with **6 insurer companies**.
+- **3 insurers** already have **APIs** — fully automated, not my concern.
+- **3 insurers** require **manual processing** — this is what I am automating.
+
+**The broker portal is called Tameen** (`mis.tameen.om`). This is where customer
+policy data and documents live.
+
+### What staff currently do manually (10–15 min per policy):
+1. Read Arabic documents (Mulkiya + License) the customer uploaded
+2. Cross-check document data against customer-submitted data
+3. Log into the insurer's website
+4. Fill in a form field by field
+5. Handle page reloads during the form
+6. Approve the policy
+7. Download the resulting PDF
+8. Upload the PDF back to the broker portal
+9. Send the PDF to the customer on WhatsApp
+
+**Volume:** 30–70 policies/day across the 3 manual insurers.
+**Goal:** Reduce staff work to **only flagged exceptions** (where document data
+does not match submitted data). Everything else runs automatically.
+
+---
+
+## 3. CURRENT STATE — WHAT ALREADY WORKS
+
+I have a **working Playwright script** (Python) that already does a real
+end-to-end run as a proof of concept. It currently uses **OrangeHRM's public demo
+site** as a stand-in for the real insurer website (so I can build safely without
+touching live insurer systems). Here is exactly what the script does today:
+
+### Tameen (broker portal) side — REAL site, working:
+1. Opens `https://mis.tameen.om/dashboard/login` and **waits for me to log in
+   manually** (Tameen DOES require OTP — so login is a manual pause, then I press
+   ENTER and automation resumes).
+2. Clicks the **PAYMENTS** tile.
+3. Clears the **Mobile Number** filter.
+4. Sets the **date range**: today − 7 days → today + 1 day (currently +1, the
+   roadmap goal is +7).
+5. Clicks **Search** and waits for the results table (handles spinners + skeleton
+   loaders, polls until row count is stable).
+6. Reads all table rows, **filters to "Muscat Insurance" rows only**, prints them
+   numbered, and **asks me to pick which row** to open, then clicks that row's
+   **eye icon** to open the record.
+7. **Reads detail fields** from the opened record using a two-strategy
+   `read_field()`: (a) click the copy icon → read clipboard, (b) fall back to
+   several XPath DOM traversals. Fields read: First Name, Last Name, Mobile
+   Number, License ID, Product Name, Color, Model Year, Make, Modal, Trim, DOB,
+   Previous Expiry.
+
+### OrangeHRM (stand-in for insurer) side — DEMO site, working:
+8. Logs in with username/password (no OTP on the demo).
+9. Goes **PIM → Add Employee**.
+10. Fills name fields, Employee ID, saves, then fills License Number, License
+    Expiry, DOB, saves, fills a custom field with Color, saves again.
+11. Prints a clean summary of all data before filling.
+
+> **Important:** OrangeHRM is a placeholder. The real target is the insurer form
+> (see section 5). The Tameen half is already pointed at the real system.
+
+### Notable techniques already in the code (keep these — they work):
+- `launch_persistent_context` with a saved `automation_profile` folder so login
+  sessions/cookies persist between runs.
+- `slow_mo=300` to make actions visible and stable.
+- Clipboard read permissions enabled for the copy-icon strategy.
+- `hrm_fill()` types character-by-character (`delay`) so React `onChange` fires —
+  plain `.fill()` was unreliable on React inputs.
+- Every interaction has **multiple fallback strategies** wrapped in try/except.
+- A `convert_date()` helper reformats dates between the two sites' formats.
+
+### Known rough edges in the current code:
+- `read_field()` relies partly on the clipboard, which can be flaky.
+- Date-format constant `TAMEEN_DATE_FORMAT` may need adjusting per the real site.
+- The field-mapping into OrangeHRM is placeholder logic
+  (`last_name = make + " " + modal`, etc.) — these mappings only make sense for
+  the demo and will be replaced entirely for the real insurer form.
+- `FILTER_TO_DATE` is today + 1, but the intended business rule is today + 7.
+
+---
+
+## 4. THE FULL TARGET WORKFLOW (where this is going)
+
+```
+1.  Staff identifies a policy to process on Tameen (the ONLY manual trigger)
+2.  Script navigates Tameen → Payment by Channel → Payment Done →
+    subpart → date range (−7 to +7) → Search → eye icon → open record
+3.  Script scrapes all relevant text fields from the record
+4.  Script opens the Mulkiya (image/PDF) → AI OCR → extract Arabic fields
+    (plate, chassis, civil ID, owner name, vehicle details, etc.)
+5.  Script opens the License → AI OCR → extract driver/license fields
+6.  CROSS-VERIFY document values vs. Tameen submitted values
+        match     → continue automatically
+        mismatch  → STOP, log the exact mismatch, alert staff, do nothing else
+7.  Open the insurer website, log in with stored credentials
+8.  Fill the insurer form (see section 5 for the field detail)
+9.  Click Calculate / Validate where required, approve, download the PDF
+        (save PDF named by policy number)
+10. Return to Tameen, upload the PDF + any extra details to confirm the policy
+11. Send the PDF to the customer's WhatsApp number
+```
+
+---
+
+## 5. THE REAL INSURER FORM (already analysed)
+
+Page title: **"Insurance Policy Form"**. Reviewed from screenshots. Key facts:
+- **All field labels are clear English.** Standard HTML form elements.
+- **No CAPTCHA. No OTP** on the insurer login.
+- Two huge time-savers — **"Get Record" auto-fill buttons**:
+  - **Get Licence Information** — enter **License No**, click Get Record →
+    site auto-populates customer fields (Lic ID, Insured Name, DOB, Address,
+    Lic Issue Date, Lic Expiry Date).
+  - **Get Vehicle Information** — choose By Plate, enter **Plate No** (+ Plate
+    Code + Plate Type), click Get Record → site auto-populates vehicle fields
+    (Make, Model, Body Type, Reg No, Chassis No, etc.).
+- Some fields use a **lookup popup** opened by a **≡ icon** (Cust Code, Make,
+  Body Type, ROP Cert No, Select Plate Code) — these need special handling.
+- **Page reloads** happen during filling — must wait for the next section.
+- A **Calculate** button and a **Validate** button must be clicked at set points.
+- **Only specific fields need filling**, not the whole form.
+
+### Form sections seen:
+- **Header:** Quotation Date, Quotation No, Status, Location Name, Policy No,
+  Process Date.
+- **Get Licence Information:** License No + Get Record.
+- **Policy Information:** Policy Type, Cust Code (≡), Lic ID, Period From/To,
+  Insured Name, Lic Issue Date, Lic Expiry Date, DOB, Age, Mobile No, Address,
+  Email, Mulkiya Type, ROP Cert No (≡), Cust Type, Ref ID.
+- **Get Vehicle Information:** By Plate / By Chassis, Enter Plate No,
+  Select Plate Code (≡), Plate Type + Get Record.
+- **Vehicle Information:** Usage, Make (≡), Body Type (≡), Model, Reg No, Char,
+  Eng No, Manf Year, Model Year, Chassis No, Seats, Colour, Geo Area (default
+  Oman), Org Card, CC/Tonnage, Car Import, Sum Insured, Mortage, Add Loading,
+  Special Dis/NCD, Remarks + Calculate + Validate.
+- **Premium Details panel** (right side, auto-calculated, read-only).
+
+### The field-to-source map is NOT YET DONE (next big task)
+Every field that must be filled needs tagging as one of:
+1. **From Tameen** (scraped from the open record)
+2. **From Mulkiya** (AI OCR)
+3. **From License** (AI OCR)
+4. **Fixed value** (same every policy — e.g. broker phone number, Location Name,
+   Geo Area = Oman, certain dropdown defaults)
+
+Completing this map is the prerequisite before writing the insurer-fill script.
+
+---
+
+## 6. TECHNICAL STACK (current decisions — kept lean)
+
+| Layer | Tool | Notes |
+|---|---|---|
+| Browser automation | **Playwright (Python)** | Already proven. Standard fixed-step Playwright, NOT Browser Use — keeps cost at zero and I already have working code. |
+| Document OCR | **Claude API (Sonnet)** | Only AI cost. Used once or twice per policy to read Arabic Mulkiya/License. Sonnet chosen for Arabic accuracy — a wrong chassis/civil ID is a serious business error. |
+| Cross-verification | Claude API or simple text comparison | Compare OCR output vs. Tameen data; stop on mismatch. |
+| WhatsApp delivery | **whatsapp-web.js (free)** | Sends via my own WhatsApp account, like WhatsApp Web. No Meta API fees at this volume. (Official WhatsApp Business API is the paid upgrade path if reliability ever demands it.) |
+| Hosting (later) | **Hetzner cloud server** (~$6/mo) | Runs 24/7. Not needed yet — currently runs on my own laptop. |
+
+### Tools deliberately DROPPED from earlier plans:
+- **n8n** — removed. Its 3 jobs (detect PDF, upload to Tameen, send WhatsApp) are
+  just extra steps in the Python script. Fewer moving parts.
+- **Browser Use / AI-driven browsing** — not used for production filling. It calls
+  the AI on every page action, which is the expensive part. Plain Playwright is
+  free and I already have it working. (Browser Use / the Playwright MCP can still
+  be handy during *building* to explore a page, but not in the running system.)
+- **WhatsApp Business Cloud API** — replaced by free whatsapp-web.js for now.
+- **Google Document AI / Tesseract** — considered for OCR. Tesseract is free but
+  weak on phone-photo Arabic (risky for chassis/civil ID). Claude API stays for
+  OCR because accuracy here matters most.
+
+---
+
+## 7. COST (lean version, current plan)
+
+| Component | Monthly |
+|---|---|
+| Hetzner server (when deployed) | ~$6 |
+| Claude API — OCR only (Sonnet) | ~$10–15 |
+| Playwright browser automation | $0 |
+| WhatsApp (whatsapp-web.js) | $0 |
+| **Total** | **~$16–21/month** |
+
+(During building, while everything runs on my laptop and OCR isn't live yet, the
+only cost is the $20/mo Claude Pro subscription I already pay.)
+
+---
+
+## 8. ROADMAP — WHERE I AM AND WHAT'S NEXT
+
+```
+✅  Proof of concept: Playwright fills a form with scraped data (DONE)
+✅  Tameen navigation + login pause + record open + field read (WORKING)
+✅  Insurer form analysed, confirmed automatable, no CAPTCHA/OTP (DONE)
+⬜  Build the field-to-source map for the insurer form (NEXT — do this first)
+⬜  Swap the OrangeHRM demo target for the REAL insurer form
+⬜  Add Claude API OCR for Mulkiya + License
+⬜  Add cross-verification (stop + alert on mismatch)
+⬜  Add Calculate / Validate / approve / download-PDF steps
+⬜  Add upload-PDF-back-to-Tameen step
+⬜  Add WhatsApp delivery (whatsapp-web.js)
+⬜  Move from laptop to Hetzner server for 24/7 running
+⬜  Repeat for insurers #2 and #3
+```
+
+### The single most useful next step
+Document the **field-to-source map** for the insurer form (section 5). Once each
+field is tagged (Tameen / Mulkiya / License / Fixed), the insurer-fill script can
+be written with no remaining unknowns.
+
+---
+
+## 9. CURRENT CODE — STRUCTURE SUMMARY
+
+The working script (Python, `playwright.sync_api`) is organised as:
+
+- **CONFIG block:** OrangeHRM demo credentials, Tameen date format, computed
+  filter dates.
+- **Shared helpers:** `read_field()` (clipboard + XPath fallbacks),
+  `hrm_fill()` (keystroke typing for React inputs), `convert_date()`.
+- **Tameen helpers:** `tameen_go_to_payments()`, `tameen_clear_mobile_filter()`,
+  `tameen_set_date_filters()`, `tameen_click_search()` (robust table-load wait),
+  `tameen_select_and_click_eye()` (reads rows, filters Muscat Insurance, asks me
+  to pick, clicks eye via 4 fallback strategies).
+- **Main flow:** opens 2 tabs (Tameen + OrangeHRM), pauses for manual Tameen
+  login/OTP, runs Tameen navigation, reads fields, maps them, logs into
+  OrangeHRM, fills + saves the employee record, prints a summary, closes.
+
+The full current script is kept separately — paste it into the session alongside
+this file when working on code.
+
+---
+
+## 10. OPEN QUESTIONS / DECISIONS NOT YET MADE
+
+- **Which record to process:** currently I manually pick the row. Decide whether
+  the real system processes one chosen record, or loops all "Payment Done"
+  Muscat Insurance records automatically.
+- **Mulkiya/License access:** how exactly are these files opened from the Tameen
+  record (download link? inline viewer? new tab?) — needs checking so the script
+  can grab the file to send to OCR.
+- **Date range:** confirm the real filter rule (roadmap says −7 to +7 days).
+- **PDF upload details:** what "additional details" Tameen requires alongside the
+  PDF upload to confirm a policy.
+- **Insurer login storage:** how to store the insurer credentials safely in the
+  script/server.

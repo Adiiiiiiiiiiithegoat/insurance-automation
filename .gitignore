@@ -1,0 +1,25 @@
+# --- Secrets / credentials ---
+.env
+.env.*
+!.env.example
+
+# --- Browser automation profile (cookies, sessions, cache — sensitive & huge) ---
+automation_profile/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# --- Claude Code local settings ---
+.claude/settings.local.json
+
+# --- OS / editor cruft ---
+Thumbs.db
+.DS_Store
+*.swp

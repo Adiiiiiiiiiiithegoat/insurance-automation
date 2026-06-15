@@ -1,0 +1,2 @@
+## ERRORS ALREADY SOLVED
+See ERRORS_LOG.md — check here before debugging anything.

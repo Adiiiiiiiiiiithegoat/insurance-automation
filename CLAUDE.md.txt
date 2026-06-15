@@ -1,0 +1,28 @@
+# Motor Insurance Automation — Claude Code Instructions
+
+## WHO I AM
+Non-technical solo developer. No coding background.
+Explain everything in plain English.
+Give instructions one step at a time.
+When something breaks I will paste the exact error.
+
+## PROJECT OVERVIEW
+Playwright automation for Oman motor insurance broker.
+Automates form filling on insurer websites using data 
+scraped from broker portal (Tameen).
+
+## CURRENT SCRIPT
+- Main file: insurance_automation.py
+- Demo works against OrangeHRM placeholder
+- Tameen side is pointed at real site and working
+
+## RULES FOR THIS CODEBASE
+- Never rewrite the whole script, edit only what's needed
+- Always explain what a code change does before making it
+- Keep all working functions exactly as they are
+- Add comments in plain English above every function
+- Never use technical jargon in explanations
+
+## CURRENT NEXT STEP
+Building field map for insurer form, then replacing 
+OrangeHRM placeholder with real insurer script.
