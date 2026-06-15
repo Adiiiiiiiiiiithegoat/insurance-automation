@@ -68,7 +68,7 @@ def read_field(page, label_text: str) -> str:
     try:
         label    = page.get_by_text(label_text, exact=True).first
         copy_btn = label.locator("xpath=following-sibling::*[1]")
-        copy_btn.click(timeout=3000)
+        copy_btn.click(timeout=15000)
         page.wait_for_timeout(400)
         value = page.evaluate("navigator.clipboard.readText()")
         if value and value.strip():
@@ -90,7 +90,7 @@ def read_field(page, label_text: str) -> str:
             val = (
                 page.get_by_text(label_text, exact=True)
                 .first.locator(xpath)
-                .first.inner_text(timeout=2000)
+                .first.inner_text(timeout=15000)
                 .strip()
             )
             if val and val != label_text and len(val) < 500:
@@ -159,14 +159,14 @@ def split_plate(vehicle_number: str):
 def wait_for_apex(page, settle_ms: int = 700) -> None:
     """Wait for APEX's AJAX/page-processing to finish, then a short settle."""
     try:
-        page.wait_for_load_state("networkidle", timeout=15000)
+        page.wait_for_load_state("networkidle", timeout=90000)
     except Exception:
         pass
     for sel in ["#apex_wait_overlay", ".u-Processing", ".apex-page-busy", "#wwvFlowForm .u-Processing"]:
         try:
             ov = page.locator(sel).first
-            if ov.is_visible(timeout=400):
-                ov.wait_for(state="hidden", timeout=30000)
+            if ov.is_visible(timeout=2000):
+                ov.wait_for(state="hidden", timeout=120000)
         except Exception:
             pass
     page.wait_for_timeout(settle_ms)
@@ -223,7 +223,7 @@ def mic_select_by_label(page, label: str, option_text: str) -> bool:
         return False
 
 
-def mic_click_button(page, text: str, which: str = "first", per_try_timeout: int = 4000) -> bool:
+def mic_click_button(page, text: str, which: str = "first", per_try_timeout: int = 15000) -> bool:
     """
     Click a button/link by its visible text.
     Only considers elements that are actually VISIBLE and tries each one quickly,
@@ -262,7 +262,7 @@ def mic_click_button(page, text: str, which: str = "first", per_try_timeout: int
 
     for c in visible:
         try:
-            c.scroll_into_view_if_needed(timeout=2000)
+            c.scroll_into_view_if_needed(timeout=10000)
             c.click(timeout=per_try_timeout)
             print(f"  ✅  Clicked '{text}'")
             return True
@@ -296,14 +296,14 @@ def mic_handle_popup_lov(page, field_label: str, value: str) -> bool:
         f'xpath=//label[contains(normalize-space(.),"{field_label}")]/following::a[1]',
     ]:
         try:
-            page.locator(sel).first.click(timeout=3000)
+            page.locator(sel).first.click(timeout=20000)
             opened = True
             break
         except Exception:
             continue
     if not opened:
         try:
-            page.get_by_label(field_label, exact=False).first.click(timeout=3000)
+            page.get_by_label(field_label, exact=False).first.click(timeout=20000)
             opened = True
         except Exception:
             pass
@@ -317,7 +317,7 @@ def mic_handle_popup_lov(page, field_label: str, value: str) -> bool:
     for sel in ['.ui-dialog:visible', '[role="dialog"]:visible', 'dialog[open]', '.a-PopupLOV:visible']:
         try:
             d = page.locator(sel).last
-            if d.is_visible(timeout=1500):
+            if d.is_visible(timeout=10000):
                 dialog = d
                 break
         except Exception:
@@ -359,8 +359,8 @@ def mic_handle_popup_lov(page, field_label: str, value: str) -> bool:
             link = row.locator('a')
             target = link.first if link.count() > 0 else row.locator('td').first
             try:
-                target.scroll_into_view_if_needed(timeout=2000)
-                target.click(timeout=4000)        # REAL click
+                target.scroll_into_view_if_needed(timeout=10000)
+                target.click(timeout=20000)        # REAL click
                 clicked = True
                 break
             except Exception:
@@ -370,7 +370,7 @@ def mic_handle_popup_lov(page, field_label: str, value: str) -> bool:
         loaded_more = False
         try:
             more = dialog.locator('button:has-text("Load More"), a:has-text("Load More")').first
-            if more.is_visible(timeout=700):
+            if more.is_visible(timeout=5000):
                 more.click()
                 page.wait_for_timeout(1000)
                 loaded_more = True
@@ -401,7 +401,7 @@ def mic_handle_popup_lov(page, field_label: str, value: str) -> bool:
     # 5) VERIFY the dialog closed (means the value was accepted) ───────────────
     page.wait_for_timeout(800)
     try:
-        still_open = dialog.is_visible(timeout=1000)
+        still_open = dialog.is_visible(timeout=5000)
     except Exception:
         still_open = False
     if still_open:
@@ -429,7 +429,7 @@ def mic_set_cust_code(page) -> bool:
     ]:
         try:
             f = page.locator(sel).first
-            if f.is_visible(timeout=2000):
+            if f.is_visible(timeout=10000):
                 field = f
                 break
         except Exception:
@@ -443,7 +443,7 @@ def mic_set_cust_code(page) -> bool:
 
     # type the value + Enter
     try:
-        field.scroll_into_view_if_needed(timeout=2000)
+        field.scroll_into_view_if_needed(timeout=10000)
         field.click()
         field.press("Control+a")
         field.press("Backspace")
@@ -458,7 +458,7 @@ def mic_set_cust_code(page) -> bool:
     # if a selection popup/menu appeared, click the exact 21252 row
     try:
         dialog = page.locator('.ui-dialog:visible, [role="dialog"]:visible').last
-        if dialog.is_visible(timeout=1000):
+        if dialog.is_visible(timeout=5000):
             idx = dialog.evaluate("""(d, want) => {
                 const rows = [...d.querySelectorAll('tr')];
                 for (let i = 0; i < rows.length; i++) {
@@ -470,7 +470,7 @@ def mic_set_cust_code(page) -> bool:
             if idx is not None and idx >= 0:
                 row = dialog.locator('tr').nth(idx)
                 link = row.locator('a')
-                (link.first if link.count() > 0 else row.locator('td').first).click(timeout=4000)
+                (link.first if link.count() > 0 else row.locator('td').first).click(timeout=20000)
                 page.wait_for_timeout(600)
     except Exception:
         pass
@@ -496,7 +496,7 @@ def read_premium(page, label: str) -> str:
     try:
         el = page.get_by_text(label, exact=True).first
         # the value box sits right after the label
-        val = el.locator("xpath=following::input[1]").first.input_value(timeout=2000)
+        val = el.locator("xpath=following::input[1]").first.input_value(timeout=15000)
         if val:
             return val.strip()
     except Exception:
@@ -505,7 +505,7 @@ def read_premium(page, label: str) -> str:
         return (
             page.get_by_text(label, exact=True).first
             .locator("xpath=following::*[normalize-space(text())!=''][1]")
-            .inner_text(timeout=2000).strip()
+            .inner_text(timeout=15000).strip()
         )
     except Exception:
         return ""
@@ -532,33 +532,54 @@ TAMEEN_SECTIONS = ["PAYMENT DONE CASES", "PAYMENT DONE DOCUMENT PENDING CASES"]
 def tameen_go_to_payments(page) -> None:
     """Step 1: click the PAYMENTS tile on the Tameen dashboard.
 
-    SPEED: after clicking we wait for 'domcontentloaded' (HTML ready) instead of
+    SPEED: we let the BROWSER watch for the tile to appear (it checks many times
+    per second and returns the instant it shows up), then click it right away with
+    a SHORT per-try timeout — so we never sit on the page's 10-minute default while
+    the tile briefly flickers or is covered by a loading overlay after login.
+    After clicking we wait only for 'domcontentloaded' (HTML ready), not
     'networkidle' (which waits for ALL background traffic to fall silent and can
-    take many seconds on a live dashboard). The next step waits for its own button,
-    so nothing runs too early.
+    take many seconds on a live dashboard). The next step waits for its own button.
     """
     print("\n── Tameen Step 1: Click PAYMENTS tile ──")
+
+    # Wait inside the browser until an element whose exact text is "PAYMENTS" exists.
     try:
-        el = page.get_by_text("PAYMENTS", exact=True).first
-        el.wait_for(state="visible", timeout=6000)
-        el.click()
-        page.wait_for_load_state("domcontentloaded")
-        print("  ✅  Payments page loaded")
-        return
+        page.wait_for_function(
+            """() => [...document.querySelectorAll('p, span, div, a, button')]
+                .some(e => (e.innerText || '').trim() === 'PAYMENTS')""",
+            timeout=60000,
+        )
     except Exception:
-        pass
-    for sel in ['p:has-text("PAYMENTS")', 'span:has-text("PAYMENTS")', 'div:has-text("PAYMENTS")']:
+        pass  # fall through and still try to click — the fallbacks below will report if missing
+
+    # Try a real Playwright click first, with a SHORT per-try timeout so it can't hang.
+    for sel in ['p:has-text("PAYMENTS")', 'span:has-text("PAYMENTS")',
+                'div:has-text("PAYMENTS")', 'a:has-text("PAYMENTS")']:
         try:
             loc = page.locator(sel)
             if loc.count() == 0:          # instant check — skip absent types with no waiting
                 continue
             el = loc.last
-            el.click(timeout=3000)
+            el.scroll_into_view_if_needed(timeout=5000)
+            el.click(timeout=8000)
             page.wait_for_load_state("domcontentloaded")
             print("  ✅  Payments page loaded")
             return
         except Exception:
             continue
+
+    # JavaScript fallback — click the smallest element whose exact text is "PAYMENTS".
+    result = page.evaluate("""() => {
+        const all = [...document.querySelectorAll('*')];
+        let t = all.find(e => e.children.length === 0 && (e.innerText || '').trim() === 'PAYMENTS');
+        if (!t) t = all.find(e => (e.innerText || '').trim() === 'PAYMENTS');
+        if (t) { t.scrollIntoView({block:'center'}); t.click(); return 'clicked'; }
+        return 'not-found';
+    }""")
+    if result == "clicked":
+        page.wait_for_load_state("domcontentloaded")
+        print("  ✅  Payments page loaded (JS fallback)")
+        return
     raise RuntimeError("Could not find the PAYMENTS tile on the dashboard")
 
 
@@ -581,7 +602,7 @@ def tameen_click_payments_by_channel(page) -> None:
                 return [...document.querySelectorAll('button, a, [role=button], input, div, span')]
                     .some(e => ((e.innerText || e.value || "").trim().toLowerCase().includes(w)));
             }""",
-            timeout=20000,
+            timeout=60000,
         )
     except Exception:
         pass  # fall through and still try to click — the fallbacks below will report if missing
@@ -598,7 +619,7 @@ def tameen_click_payments_by_channel(page) -> None:
             el = page.locator(sel).first
             if el.is_visible():
                 el.scroll_into_view_if_needed()
-                el.click(timeout=4000)
+                el.click(timeout=20000)
                 page.wait_for_load_state("domcontentloaded")
                 print("  ✅  'Payments by Channel' page opened")
                 return
@@ -821,7 +842,7 @@ def tameen_select_channel(page) -> None:
                 "[role='row']:not([class*='header'])",
                 "[class*='tr']:not([class*='header'])"]:
         try:
-            page.wait_for_selector(sel, state="visible", timeout=20000)
+            page.wait_for_selector(sel, state="visible", timeout=90000)
             prev = 0
             for _ in range(10):
                 c = page.locator(sel).count()
@@ -842,8 +863,11 @@ def tameen_select_channel(page) -> None:
 def tameen_select_and_click_eye(page):
     """Step 4: list the Muscat Insurance rows and ask which to open.
 
-    Returns "BACK" if the user types 0 (they want to go back to the channel select).
-    Otherwise it opens the chosen record and returns "OK".
+    Returns a (status, record_text) tuple:
+      ("BACK", None)        — user typed 0 (go back to the channel select)
+      ("OK", "<row text>")  — the chosen record was opened; the text is kept so
+                              the main flow can show it in the success / flagged
+                              error summary.
     """
     print("\n── Tameen Step 4: Select which record to open (Muscat Insurance only) ──")
     page.wait_for_timeout(1500)
@@ -916,7 +940,7 @@ def tameen_select_and_click_eye(page):
             continue
         if choice == 0:
             print("\n  ⤴  Going back to the channel select...")
-            return "BACK"
+            return "BACK", None
         if 1 <= choice <= len(filtered):
             break
         print("  Please enter a valid number in range.")
@@ -953,12 +977,78 @@ def tameen_select_and_click_eye(page):
             }
         """, idx)
         if result:
-            page.wait_for_load_state("networkidle")
+            # 'domcontentloaded' (page structure ready), NOT 'networkidle'. The
+            # Tameen dashboard keeps background traffic running forever, so the
+            # network never falls silent — waiting for 'networkidle' here used to
+            # hang for the full default timeout. Every other step already uses
+            # 'domcontentloaded'; this was the last holdout.
+            page.wait_for_load_state("domcontentloaded")
             print("  ✅  Opened record")
-            return "OK"
+            return "OK", selected["text"]
     except Exception:
         pass
     raise RuntimeError(f"Could not open row {choice}.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  RESET HELPERS  —  return each tab to its starting point between records
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _tameen_on_payments_page(page) -> bool:
+    """True if the red 'Payments by Channel' button is currently on the page."""
+    try:
+        return page.evaluate("""() => {
+            const w = "payments by channel";
+            return [...document.querySelectorAll('button, a, [role=button], input, div, span')]
+                .some(e => ((e.innerText || e.value || "").trim().toLowerCase().includes(w)));
+        }""")
+    except Exception:
+        return False
+
+
+def tameen_reset_to_payments(page) -> None:
+    """Send Tameen back to the Payments page (where 'Payments by Channel' lives)
+    using IN-APP navigation only — no full reload — so the login/OTP session is
+    preserved.
+
+    Strategy: press the browser Back button a few times, checking after each one
+    whether the 'Payments by Channel' button is showing. If Back overshoots all
+    the way to the dashboard, just re-open the PAYMENTS tile instead.
+    """
+    print("\n── Tameen reset: returning to the Payments page ──")
+    for _ in range(4):
+        if _tameen_on_payments_page(page):
+            print("  ✅  Back on the Payments page")
+            return
+        try:
+            page.go_back(wait_until="domcontentloaded")
+        except Exception:
+            break
+        page.wait_for_timeout(800)
+
+    if _tameen_on_payments_page(page):
+        print("  ✅  Back on the Payments page")
+        return
+
+    # Fallback: we are probably on the dashboard now → click the PAYMENTS tile again.
+    try:
+        tameen_go_to_payments(page)
+    except Exception:
+        print("  ⚠️  Could not confirm the Payments page — please navigate to it by hand.")
+
+
+def mic_reset_to_home(page) -> None:
+    """Return MIC to its home page so the next policy can be started fresh.
+
+    The next record's mic_open_policy_create() clicks Policy → Create from here,
+    and mic_login_if_needed() will sign back in if the session has dropped.
+    """
+    print("\n── MIC reset: returning to the home page ──")
+    try:
+        page.goto(MIC_HOME_URL, wait_until="domcontentloaded", timeout=60000)
+        print("  ✅  MIC home page loaded")
+    except Exception as e:
+        print(f"  ⚠️  Could not load the MIC home page ({e}) — please open it by hand.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -979,7 +1069,7 @@ def mic_login_if_needed(page) -> None:
     for sel in ['#P101_PASSWORD', 'input[name="p_password"]', 'input[type="password"]']:
         try:
             cand = page.locator(sel).first
-            if cand.is_visible(timeout=2500):
+            if cand.is_visible(timeout=15000):
                 pwd = cand
                 break
         except Exception:
@@ -1003,7 +1093,7 @@ def mic_login_if_needed(page) -> None:
                 'input[type="text"]', 'input:not([type])']:
         try:
             box = page.locator(sel).first
-            if box.is_visible(timeout=1500):
+            if box.is_visible(timeout=10000):
                 box.click()
                 box.fill("")
                 box.type(MIC_USERNAME, delay=20)
@@ -1039,7 +1129,7 @@ def mic_login_if_needed(page) -> None:
     # Confirm we actually left the login page.
     still_login = False
     try:
-        still_login = page.locator('input[type="password"]').first.is_visible(timeout=2000)
+        still_login = page.locator('input[type="password"]').first.is_visible(timeout=10000)
     except Exception:
         still_login = False
     if still_login:
@@ -1060,7 +1150,7 @@ def mic_click_tile(page, tile_text: str) -> None:
         page.wait_for_function(
             "(t) => [...document.querySelectorAll('span, p, a, button, div')]"
             ".some(e => (e.innerText || '').trim() === t)",
-            arg=tile_text, timeout=10000,
+            arg=tile_text, timeout=60000,
         )
     except Exception:
         pass
@@ -1074,8 +1164,8 @@ def mic_click_tile(page, tile_text: str) -> None:
             if loc.count() == 0:
                 continue
             el = loc.last
-            el.scroll_into_view_if_needed(timeout=2000)
-            el.click(timeout=3000)
+            el.scroll_into_view_if_needed(timeout=10000)
+            el.click(timeout=20000)
             print(f"  ✅  Clicked tile '{tile_text}' (via {el_type})")
             return
         except Exception:
@@ -1220,7 +1310,7 @@ def mic_enable_addl_benefit(page) -> None:
 
     # Make sure the grid is on screen (the row must be rendered to interact with it)
     try:
-        page.get_by_text(ADDL_BENEFIT_DESC, exact=True).first.scroll_into_view_if_needed(timeout=4000)
+        page.get_by_text(ADDL_BENEFIT_DESC, exact=True).first.scroll_into_view_if_needed(timeout=20000)
     except Exception:
         page.mouse.wheel(0, 1500)
         page.wait_for_timeout(600)
@@ -1228,7 +1318,7 @@ def mic_enable_addl_benefit(page) -> None:
     # Locate the row by its (unique) description text
     row = page.locator('tr', has_text=ADDL_BENEFIT_DESC).first
     try:
-        row.scroll_into_view_if_needed(timeout=4000)
+        row.scroll_into_view_if_needed(timeout=20000)
     except Exception:
         print("  ⚠️  Could not find the Road Side Assistance - Silver row")
         return
@@ -1240,7 +1330,7 @@ def mic_enable_addl_benefit(page) -> None:
 
     # REAL double-click to enter edit mode
     try:
-        target_cell.scroll_into_view_if_needed(timeout=2000)
+        target_cell.scroll_into_view_if_needed(timeout=10000)
         target_cell.dblclick()
     except Exception as e:
         print(f"  ⚠️  double-click failed: {e}")
@@ -1263,7 +1353,7 @@ def mic_enable_addl_benefit(page) -> None:
         try:
             target_cell.click()
             page.wait_for_timeout(300)
-            page.get_by_text("Yes", exact=True).last.click(timeout=3000)
+            page.get_by_text("Yes", exact=True).last.click(timeout=20000)
             done = True
         except Exception:
             pass
@@ -1319,7 +1409,11 @@ def mic_calculate_and_check(page, tameen_total: str) -> None:
     print("\n── MIC Steps 20–22: Calculate + premium check ──")
     mic_click_button(page, "Calculate")                      # step 20
     wait_for_apex(page)
-    mic_click_button(page, "OK", per_try_timeout=4000)               # step 21 (confirmation, if any)
+    # step 21: Calculate raises a "There are unsaved changes, do you want to
+    # continue?" popup (OK / Cancel). Click OK. This is the SAME APEX confirmation
+    # type as the OK after the second Create, so target the popup's own button with
+    # which="last" (the popup is added later in the DOM than any page-level OK).
+    mic_click_button(page, "OK", which="last", per_try_timeout=15000)
     wait_for_apex(page)
 
     net_prem = read_premium(page, "Net Prem Incl. VAT")      # step 22
@@ -1340,14 +1434,6 @@ def mic_calculate_and_check(page, tameen_total: str) -> None:
         print("  ⚠️  Could not compare premiums numerically — check the values above.")
 
 
-def mic_set_status_approved(page) -> None:
-    """Step 23: change Status from Draft to Approved (top of the form)."""
-    print("\n── MIC Step 23: Status → Approved ──")
-    mic_select_by_label(page, "Status", "Approved")
-    # If saving requires it, you may also need: mic_click_button(page, "Apply Changes")
-    # — left OUT on purpose. Tell me if Approved doesn't stick without it.
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN FLOW
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1365,18 +1451,34 @@ with sync_playwright() as p:
 
     print("Opening Tameen website...")
     tameen_page = context.new_page()
-    tameen_page.set_default_timeout(600000)
+    # 2 minutes (120000 ms) per action — a safety net so nothing can ever hang for
+    # 10 minutes. The long manual login/OTP wait is handled by the ENTER prompt
+    # below (plain Python input, no Playwright timeout), so this does not rush you.
+    tameen_page.set_default_timeout(120000)
     tameen_page.goto("https://mis.tameen.om/dashboard/login", timeout=60000)
 
     print("Opening MIC website...")
     mic_page = context.new_page()
-    # 30s (not 2 min): if a click ever lands on a covered element it fails fast
-    # with a clear error instead of looking frozen for two minutes.
-    mic_page.set_default_timeout(30000)
+    # 2 minutes (120000 ms) per action: long enough for slow APEX pages to react,
+    # but bounded so a click on a covered element eventually fails with a clear
+    # error instead of hanging forever.
+    mic_page.set_default_timeout(120000)
+
+    # ── Native browser dialogs: ALWAYS click OK / Accept ──────────────────────
+    # The "There are unsaved changes, do you want to continue?" prompt after
+    # Calculate is a NATIVE browser confirm()/beforeunload dialog — not an HTML
+    # popup — so there is no DOM button to click. Playwright AUTO-DISMISSES (i.e.
+    # clicks CANCEL on) such dialogs unless a handler is registered, which is
+    # exactly why "pressing OK" never worked before. Registering this handler
+    # makes Playwright ACCEPT every native dialog, which is the same as clicking
+    # OK. Registered on both tabs so tab resets / navigations are never blocked.
+    mic_page.on("dialog", lambda dialog: dialog.accept())
+    tameen_page.on("dialog", lambda dialog: dialog.accept())
+
     mic_page.goto(MIC_HOME_URL, timeout=60000)
 
     try:
-        # ── TAMEEN: manual OTP login ──────────────────────────────────────────
+        # ── TAMEEN: manual OTP login (ONE TIME for the whole run) ─────────────
         print("\n" + "=" * 60)
         print("⏸  ACTION REQUIRED")
         print("  1. Switch to the Tameen tab")
@@ -1385,84 +1487,144 @@ with sync_playwright() as p:
         print("=" * 60)
         input("\nPress ENTER once you are logged in to Tameen ▶  ")
 
-        # ── TAMEEN: navigate + open the record ───────────────────────────────
+        # ── TAMEEN: land on the Payments page (ONE TIME) ──────────────────────
         tameen_page.bring_to_front()
         print("\nAutomating Tameen navigation...")
         tameen_go_to_payments(tameen_page)               # step 1: PAYMENTS tile
 
-        # Steps 2–4 loop: if you type 0 at the row prompt, it re-clicks
-        # 'Payments by Channel' and lets you pick a different channel.
+        # ══════════════════════════════════════════════════════════════════════
+        #  PER-RECORD LOOP
+        #  Process one policy, then (on demand) reset BOTH tabs and offer the next.
+        #  Type 'q' at either prompt to stop and close the browser.
+        # ══════════════════════════════════════════════════════════════════════
         while True:
-            tameen_click_payments_by_channel(tameen_page)  # step 2: red 'Payments by Channel' button
-            tameen_select_channel(tameen_page)             # step 3: pick a channel by number
-            nav = tameen_select_and_click_eye(tameen_page) # step 4: pick a row (Muscat Insurance only)
-            if nav != "BACK":
-                break
+            record_text = None     # the chosen Tameen row's text (for the summaries)
+            prepared    = None     # the values prepared for MIC (filled in below)
 
-        # ── TAMEEN: read all needed fields ───────────────────────────────────
-        print("\nReading data from Tameen record...")
-        first_name   = read_field(tameen_page, "First Name")
-        last_name    = read_field(tameen_page, "Last Name")
-        license_id   = read_field(tameen_page, "License ID")
-        product_name = read_field(tameen_page, "Product Name")
-        prev_expiry  = read_field(tameen_page, "Previous Expiry")
-        # ⚠️ CONFIRM these three Tameen labels — I guessed them:
-        vehicle_no   = read_field(tameen_page, "Vehicle Number")   # e.g. "B S-4788"
-        sum_insured  = read_field(tameen_page, "Sum Insured")
-        tameen_total = read_field(tameen_page, "Total Premium")
+            try:
+                # Bring Tameen to the front EACH record: read_field reads via the
+                # clipboard, which only works while this tab is focused. (On record
+                # 2+ the MIC tab was last in front, so without this the reads would
+                # silently fall back to the less-reliable DOM path.)
+                tameen_page.bring_to_front()
 
-        # Seats — read live from the Tameen View Details page. The label may be
-        # written a few different ways, so try the most likely ones in order.
-        seats_raw = ""
-        for seats_label in ("Seats", "No. of Seats", "No Of Seats",
-                            "Number of Seats", "Seating Capacity", "Seat Capacity"):
-            seats_raw = read_field(tameen_page, seats_label)
-            if seats_raw:
-                break
-        # Keep only the digits (so 'Seats: 7' or '7 seats' both become '7').
-        seats = "".join(ch for ch in seats_raw if ch.isdigit())
+                # ── TAMEEN: pick channel + row ────────────────────────────────
+                # (typing 0 at the row prompt re-opens 'Payments by Channel' so
+                #  you can pick a different channel.)
+                while True:
+                    tameen_click_payments_by_channel(tameen_page)  # step 2
+                    tameen_select_channel(tameen_page)             # step 3
+                    status, record_text = tameen_select_and_click_eye(tameen_page)  # step 4
+                    if status != "BACK":
+                        break
 
-        # ── Derive the values MIC needs ──────────────────────────────────────
-        full_name    = (first_name + " " + last_name).strip()
-        period_from  = compute_period_from(parse_tameen_date(prev_expiry))
-        plate_code, plate_number = split_plate(vehicle_no)
+                # ── TAMEEN: read all needed fields ────────────────────────────
+                print("\nReading data from Tameen record...")
+                first_name   = read_field(tameen_page, "First Name")
+                last_name    = read_field(tameen_page, "Last Name")
+                license_id   = read_field(tameen_page, "License ID")
+                product_name = read_field(tameen_page, "Product Name")
+                prev_expiry  = read_field(tameen_page, "Previous Expiry")
+                # ⚠️ CONFIRM these three Tameen labels — I guessed them:
+                vehicle_no   = read_field(tameen_page, "Vehicle Number")   # e.g. "B S-4788"
+                sum_insured  = read_field(tameen_page, "Sum Insured")
+                tameen_total = read_field(tameen_page, "Total Premium")
 
-        print("\n" + "=" * 60)
-        print("📋  VALUES PREPARED FOR MIC")
-        print("=" * 60)
-        print(f"  Product Name   : {product_name}")
-        print(f"  Insured Name   : {full_name}")
-        print(f"  License No     : {license_id}")
-        print(f"  Period From    : {period_from}   (from expiry '{prev_expiry}')")
-        print(f"  Plate          : code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')")
-        print(f"  Seats          : {seats or '(not read — check the Tameen label)'}")
-        print(f"  Sum Insured    : {sum_insured}")
-        print(f"  Tameen Premium : {tameen_total}")
-        print("=" * 60)
+                # Seats — read live from the Tameen View Details page. The label may be
+                # written a few different ways, so try the most likely ones in order.
+                seats_raw = ""
+                for seats_label in ("Seats", "No. of Seats", "No Of Seats",
+                                    "Number of Seats", "Seating Capacity", "Seat Capacity"):
+                    seats_raw = read_field(tameen_page, seats_label)
+                    if seats_raw:
+                        break
+                # Keep only the digits (so 'Seats: 7' or '7 seats' both become '7').
+                seats = "".join(ch for ch in seats_raw if ch.isdigit())
 
-        # ══════════════════════════════════════════════════════════════════════
-        #  STAGED TESTING — uncomment one block at a time as each section works.
-        #  Start by running ONLY through mic_choose_policy_type_and_create, check
-        #  it on screen, then enable the next block, and so on.
-        # ══════════════════════════════════════════════════════════════════════
-        mic_page.bring_to_front()
-        mic_login_if_needed(mic_page)                                   # step 0
-        mic_open_policy_create(mic_page)                                # steps 1–2
-        is_comprehensive = mic_choose_policy_type_and_create(mic_page, product_name)  # steps 3–4
+                # ── Derive the values MIC needs ───────────────────────────────
+                full_name    = (first_name + " " + last_name).strip()
+                period_from  = compute_period_from(parse_tameen_date(prev_expiry))
+                plate_code, plate_number = split_plate(vehicle_no)
 
-        # ─── enable the blocks below once the ones above are confirmed working ───
-        mic_get_licence(mic_page, license_id)                          # steps 5–6
-        mic_fill_policy_info(mic_page, full_name, period_from)         # steps 7–12
-        mic_get_vehicle(mic_page, plate_number, plate_code)           # steps 13–15
-        mic_fill_vehicle_info(mic_page, is_comprehensive, sum_insured, seats) # steps 16–19
-        mic_calculate_and_check(mic_page, tameen_total)               # steps 20–22
-        mic_set_status_approved(mic_page)                              # step 23
+                # Keep every prepared value together so BOTH the success summary
+                # and the flagged-error summary can show the same details.
+                prepared = {
+                    "Product Name"  : product_name,
+                    "Insured Name"  : full_name,
+                    "License No"    : license_id,
+                    "Period From"   : f"{period_from}   (from expiry '{prev_expiry}')",
+                    "Plate"         : f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
+                    "Seats"         : seats or "(not read — check the Tameen label)",
+                    "Sum Insured"   : sum_insured,
+                    "Tameen Premium": tameen_total,
+                }
 
-        print("\n" + "=" * 60)
-        print("✅  MIC FLOW FINISHED — review the form on screen.")
-        print("=" * 60)
+                print("\n" + "=" * 60)
+                print("📋  VALUES PREPARED FOR MIC")
+                print("=" * 60)
+                for label, value in prepared.items():
+                    print(f"  {label:<14}: {value}")
+                print("=" * 60)
+
+                # ── MIC: fill in the policy (left as Draft — not approved) ────
+                mic_page.bring_to_front()
+                mic_login_if_needed(mic_page)                                   # step 0
+                mic_open_policy_create(mic_page)                                # steps 1–2
+                is_comprehensive = mic_choose_policy_type_and_create(mic_page, product_name)  # steps 3–4
+                mic_get_licence(mic_page, license_id)                          # steps 5–6
+                mic_fill_policy_info(mic_page, full_name, period_from)         # steps 7–12
+                mic_get_vehicle(mic_page, plate_number, plate_code)           # steps 13–15
+                mic_fill_vehicle_info(mic_page, is_comprehensive, sum_insured, seats)  # steps 16–19
+                mic_calculate_and_check(mic_page, tameen_total)               # steps 20–22
+                # Status is intentionally left as Draft — no auto-approve.
+
+                print("\n" + "=" * 60)
+                print("✅  MIC FLOW FINISHED — review the form on screen.")
+                if record_text:
+                    print(f"   Record: {record_text}")
+                print("=" * 60)
+
+                # RESET ON DEMAND: nothing is touched until the employee says so.
+                ans = input("\nReview the result. Press ENTER to reset both tabs and "
+                            "process another record, or type 'q' then ENTER to finish ▶  ")
+                if ans.strip().lower() == "q":
+                    break
+
+            except Exception as e:
+                # ── FLAGGED QUOTE ─────────────────────────────────────────────
+                # Show the problem + the record details (same style as the row
+                # list) so the employee can investigate / contact whoever they
+                # need before moving on. Nothing resets until they continue.
+                print("\n" + "=" * 60)
+                print("❌  THIS QUOTE HIT A PROBLEM — FLAGGED FOR REVIEW")
+                print("=" * 60)
+                print(f"  Reason: {e}")
+                print("-" * 60)
+                if record_text:
+                    print(f"  Tameen record : {record_text}")
+                if prepared:
+                    print("  Details prepared so far:")
+                    for label, value in prepared.items():
+                        print(f"    {label:<14}: {value}")
+                else:
+                    print("  (Failed before the record's details could be read.)")
+                print("-" * 60)
+                print("  → Investigate in the browser tabs. Contact whoever you need")
+                print("    for any missing/extra information to sort this quote out.")
+                print("=" * 60)
+
+                ans = input("\nWhen you are done, press ENTER to reset both tabs and "
+                            "continue to the next record, or type 'q' then ENTER to finish ▶  ")
+                if ans.strip().lower() == "q":
+                    break
+
+            # Reached only when CONTINUING (after a success OR a flagged error):
+            # send both tabs back to their starting points for the next record.
+            mic_reset_to_home(mic_page)
+            tameen_reset_to_payments(tameen_page)
 
     except Exception as e:
+        # Catches problems in the one-time login / first navigation above.
         print("\n" + "=" * 60)
         print(f"❌  ERROR:\n{e}")
         print("=" * 60)

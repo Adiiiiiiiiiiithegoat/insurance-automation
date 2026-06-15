@@ -1,2 +1,49 @@
-## ERRORS ALREADY SOLVED
-See ERRORS_LOG.md — check here before debugging anything.
+# ERRORS ALREADY SOLVED
+
+Check here BEFORE debugging anything. Each entry: symptom → root cause → fix → lesson.
+
+---
+
+## 1. "There are unsaved changes. Do you want to continue?" popup after Calculate was never clicking OK
+
+**Symptom**
+After pressing **Calculate** (step 20), a popup appears: *"There are unsaved changes.
+Do you want to continue?"* with **OK / Cancel** buttons. The automation kept failing to
+press OK — the flow stalled on the popup or proceeded as if Cancel had been pressed.
+
+**What went wrong (two wrong diagnoses)**
+
+1. *First attempt* — fired a generic `mic_click_button(page, "OK", which="last")`
+   immediately after Calculate. Right idea (DOM click) but it FAILED because it did
+   **not wait** for the dialog to finish animating in, and the loose `:has-text("OK")`
+   match could fire too early or land on the wrong element.
+
+2. *Second attempt* — wrongly concluded it was a **native browser dialog**
+   (`confirm()` / `beforeunload`) and added `page.on("dialog", lambda d: d.accept())`.
+   That does **nothing** for this popup, because it is NOT native.
+
+**Root cause**
+The popup is an **APEX in-page HTML dialog** (it has a green OK button styled to match
+the site theme). It is drawn inside the page DOM, so:
+  - `page.on("dialog", ...)` never sees it (that event only fires for native popups), and
+  - a click fired before the dialog animates in misses it.
+
+**The fix that worked** — dedicated helper `mic_accept_confirm_dialog(page)`:
+  1. **Polls/WAITS** until a `.ui-dialog` / `[role="dialog"]` is actually visible
+     (it appears a moment after the click, with an animation).
+  2. Searches for the OK button **scoped INSIDE that dialog**, matching **exact "OK"**
+     (`get_by_role("button", name="OK", exact=True)`) so it can never hit Cancel.
+  3. Uses a **real Playwright click** (APEX ignores synthetic JS clicks).
+  4. Fallbacks: any page-level OK, then pressing **Enter** (activates the dialog's
+     default button, which is OK).
+Called from `mic_calculate_and_check` as step 21.
+
+**Lesson — how to tell the two dialog types apart (do this FIRST next time):**
+  - **Native browser dialog** = OS-styled, plain, no site theming, no DOM node.
+    Handle with `page.on("dialog", lambda d: d.accept())`. Playwright AUTO-DISMISSES
+    (= Cancel) these unless a handler is registered.
+  - **In-page HTML/APEX dialog** = styled to match the site (e.g. a green OK button),
+    lives in the DOM. Handle by WAITING for it to be visible, then a REAL Playwright
+    click on the exact "OK" button scoped inside the dialog.
+  If the button looks themed/coloured, it is an in-page dialog — do NOT reach for
+  `page.on("dialog")`.
