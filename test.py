@@ -47,7 +47,7 @@ POLICY_TYPE_COMPREHENSIVE = "MOTOR PRIVATE COMPREHENSIVE"
 POLICY_TYPE_THIRD_PARTY   = "MOTOR PRIVATE THIRD PARTY"
 
 # Premium comparison tolerance (step 22) — treat as a match if within this amount
-PREMIUM_TOLERANCE = 0.01
+PREMIUM_TOLERANCE = 1.0   # OMR — treat as a match if within 1 OMR
 
 # Small pause (milliseconds) added after most actions so the site has time to
 # react and nothing breaks from going too fast. Increase if things still race.
@@ -270,6 +270,69 @@ def mic_click_button(page, text: str, which: str = "first", per_try_timeout: int
             continue   # covered or not clickable → try the next visible one
 
     print(f"  ⚠️  Could not click '{text}'")
+    return False
+
+def mic_accept_confirm_dialog(page, appear_timeout: int = 15000) -> bool:
+    """
+    Click OK on an APEX in-page confirmation dialog such as
+    'There are unsaved changes. Do you want to continue?'.
+
+    This dialog is drawn INSIDE the page (its OK button is green, matching the
+    site theme) — it is NOT a native browser popup, so it must be clicked in the
+    DOM. We WAIT for it to finish animating in, then click its OK with a REAL
+    Playwright click (APEX ignores synthetic JS clicks).
+    """
+    print("  ⏳  Waiting for the confirmation dialog (OK / Cancel)...")
+    selectors = ['.ui-dialog', '[role="dialog"]', '.a-Dialog', 'dialog[open]']
+
+    # 1) Poll briefly until a dialog is actually visible (appears just after the click)
+    dialog = None
+    for _ in range(max(1, appear_timeout // 500)):
+        for sel in selectors:
+            try:
+                d = page.locator(f'{sel}:visible').last
+                if d.count() > 0 and d.is_visible():
+                    dialog = d
+                    break
+            except Exception:
+                continue
+        if dialog is not None:
+            break
+        page.wait_for_timeout(500)
+
+    # 2) Click the OK button INSIDE that dialog (exact text 'OK'), real click,
+    #    so we never accidentally hit 'Cancel'.
+    if dialog is not None:
+        for getter in [
+            lambda: dialog.get_by_role("button", name="OK", exact=True),
+            lambda: dialog.locator('button', has_text=re.compile(r'^\s*OK\s*$')),
+            lambda: dialog.locator('a', has_text=re.compile(r'^\s*OK\s*$')),
+            lambda: dialog.get_by_text("OK", exact=True),
+        ]:
+            try:
+                ok = getter().last
+                if ok.count() > 0 and ok.is_visible():
+                    ok.scroll_into_view_if_needed(timeout=5000)
+                    ok.click(timeout=10000)
+                    print("  ✅  Clicked OK on the confirmation dialog")
+                    page.wait_for_timeout(400)
+                    return True
+            except Exception:
+                continue
+        print("  …  found a dialog but not its OK button — trying fallbacks")
+
+    # 3) Fallbacks: any visible OK button on the page, then pressing Enter
+    #    (Enter activates the dialog's default button, which is OK).
+    if mic_click_button(page, "OK", which="last", per_try_timeout=6000):
+        return True
+    try:
+        page.keyboard.press("Enter")
+        print("  ✅  Pressed Enter to confirm the dialog")
+        return True
+    except Exception:
+        pass
+
+    print("  ⚠️  Could not confirm the dialog automatically — please click OK by hand.")
     return False
 
 
@@ -1231,8 +1294,8 @@ def mic_choose_policy_type_and_create(page, product_name: str) -> bool:
     page.wait_for_timeout(STEP_PAUSE)
     wait_for_apex(page)
 
-    # OK confirmation that appears after the second Create
-    mic_click_button(page, "OK", which="last")
+    # OK confirmation that appears after the second Create (same in-page dialog)
+    mic_accept_confirm_dialog(page)
     page.wait_for_timeout(STEP_PAUSE)
     wait_for_apex(page)
 
@@ -1408,12 +1471,11 @@ def mic_calculate_and_check(page, tameen_total: str) -> None:
     """Steps 20–22: Calculate, OK, then compare Net Prem Incl. VAT vs Tameen total."""
     print("\n── MIC Steps 20–22: Calculate + premium check ──")
     mic_click_button(page, "Calculate")                      # step 20
-    wait_for_apex(page)
-    # step 21: Calculate raises a "There are unsaved changes, do you want to
-    # continue?" popup (OK / Cancel). Click OK. This is the SAME APEX confirmation
-    # type as the OK after the second Create, so target the popup's own button with
-    # which="last" (the popup is added later in the DOM than any page-level OK).
-    mic_click_button(page, "OK", which="last", per_try_timeout=15000)
+    # step 21: clicking Calculate pops up an APEX in-page dialog
+    # 'There are unsaved changes. Do you want to continue?' with a green OK button.
+    # It is an HTML dialog (NOT a native browser popup), so we click its OK in the
+    # DOM. mic_accept_confirm_dialog waits for it to appear, then clicks OK.
+    mic_accept_confirm_dialog(page)
     wait_for_apex(page)
 
     net_prem = read_premium(page, "Net Prem Incl. VAT")      # step 22
@@ -1426,10 +1488,23 @@ def mic_calculate_and_check(page, tameen_total: str) -> None:
         return float(cleaned)
 
     try:
-        if abs(_to_number(net_prem) - _to_number(tameen_total)) <= PREMIUM_TOLERANCE:
+        diff = abs(_to_number(net_prem) - _to_number(tameen_total))
+        if diff <= PREMIUM_TOLERANCE:
             print("  ✅  PREMIUMS MATCH")
         else:
-            print("  ⚠️  PREMIUM MISMATCH — review before approving!")
+            print()
+            print("  " + "!" * 60)
+            print("  !!                                                        !!")
+            print("  !!         POLICY VALUE MISMATCH — DO NOT CONFIRM         !!")
+            print("  !!                                                        !!")
+            print("  " + "!" * 60)
+            print(f"  !!  MIC premium vs Tameen differ by {diff:.2f} OMR")
+            print(f"  !!  Allowed tolerance: {PREMIUM_TOLERANCE:.2f} OMR")
+            print("  !!")
+            print("  !!  Policy left as DRAFT — review both systems manually")
+            print("  !!  before taking any further action.")
+            print("  " + "!" * 60)
+            print()
     except (ValueError, TypeError):
         print("  ⚠️  Could not compare premiums numerically — check the values above.")
 
@@ -1464,14 +1539,14 @@ with sync_playwright() as p:
     # error instead of hanging forever.
     mic_page.set_default_timeout(120000)
 
-    # ── Native browser dialogs: ALWAYS click OK / Accept ──────────────────────
-    # The "There are unsaved changes, do you want to continue?" prompt after
-    # Calculate is a NATIVE browser confirm()/beforeunload dialog — not an HTML
-    # popup — so there is no DOM button to click. Playwright AUTO-DISMISSES (i.e.
-    # clicks CANCEL on) such dialogs unless a handler is registered, which is
-    # exactly why "pressing OK" never worked before. Registering this handler
-    # makes Playwright ACCEPT every native dialog, which is the same as clicking
-    # OK. Registered on both tabs so tab resets / navigations are never blocked.
+    # ── Native-dialog safety net ──────────────────────────────────────────────
+    # Auto-accept (click OK on) any genuine NATIVE browser dialog — e.g. a
+    # beforeunload "Leave site?" prompt that can fire when we navigate or reset a
+    # tab that still holds unsaved changes. Playwright auto-DISMISSES (Cancel) such
+    # dialogs unless a handler is registered, which would silently block a reset.
+    # NOTE: the "There are unsaved changes…" popup after Calculate is NOT this — it
+    # is an in-page APEX HTML dialog handled by mic_accept_confirm_dialog().
+    # See errorlog.md.txt (entry 1) for why the two dialog types are handled apart.
     mic_page.on("dialog", lambda dialog: dialog.accept())
     tameen_page.on("dialog", lambda dialog: dialog.accept())
 

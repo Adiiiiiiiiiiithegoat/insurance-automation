@@ -1492,8 +1492,19 @@ def mic_calculate_and_check(page, tameen_total: str) -> None:
         if diff <= PREMIUM_TOLERANCE:
             print("  ✅  PREMIUMS MATCH")
         else:
-            print(f"  ❌  ERROR: PREMIUM MISMATCH — differs by {diff:.2f} OMR "
-                  f"(tolerance {PREMIUM_TOLERANCE:.2f}). Keeping policy as DRAFT — review manually.")
+            print()
+            print("  " + "!" * 60)
+            print("  !!                                                        !!")
+            print("  !!         POLICY VALUE MISMATCH — DO NOT CONFIRM         !!")
+            print("  !!                                                        !!")
+            print("  " + "!" * 60)
+            print(f"  !!  MIC premium vs Tameen differ by {diff:.2f} OMR")
+            print(f"  !!  Allowed tolerance: {PREMIUM_TOLERANCE:.2f} OMR")
+            print("  !!")
+            print("  !!  Policy left as DRAFT — review both systems manually")
+            print("  !!  before taking any further action.")
+            print("  " + "!" * 60)
+            print()
     except (ValueError, TypeError):
         print("  ⚠️  Could not compare premiums numerically — check the values above.")
 
