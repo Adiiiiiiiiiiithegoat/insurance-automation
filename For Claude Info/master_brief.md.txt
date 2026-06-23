@@ -117,18 +117,7 @@ Python — the programming language that ties everything together. Runs on the c
 
 Playwright — the underlying browser control library that Browser Use is built on. Already proven working in the proof of concept phase.
 
-### AI  OCR
-Claude API — used inside the automation pipeline for document reading and cross-verification. Two models are used
-- claude-sonnet for Mulkiya and License OCR — higher accuracy for Arabic, used once per policy
-- claude-haiku for Browser Use decision making — cheaper, fast enough for form navigation, used many times per policy
 
-The Claude API is separate from Claude Pro. It is called programmatically by the Python script with no human involvement.
-
-### Delivery
-WhatsApp Business Cloud API — Meta's official API for sending WhatsApp messages programmatically. Connected through n8n. First 1000 conversations per month are free. Beyond that approximately $0.05–0.08 per conversation.
-
-### Infrastructure
-Cloud server — approximately $5–7 per month. Runs Linux. Hosts Python scripts, Browser Use, and n8n. Runs 24 hours a day. All code lives here. The developer connects to it via terminal when maintenance is needed, with Claude guiding every command.
 
 ---
 
@@ -150,7 +139,7 @@ The exact field-to-source mapping for the specific insurer has not yet been full
 - Explain all code in plain English, not technical terms
 - When errors occur, the developer will paste the exact error message for fixing
 - Do not assume any technical knowledge
-- The developer uses Claude Pro chat for all development — no Claude Code
+- The developer uses Claude code for all development and chat for all planning
 - All code is copied and pasted onto the server manually
 - Heavy debugging sessions should be done in evenings or weekends to avoid Claude Pro peak hour limits
 - Start each new session with a brief context summary to avoid wasting messages re-explaining

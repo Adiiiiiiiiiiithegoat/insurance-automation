@@ -51,57 +51,96 @@ does not match submitted data). Everything else runs automatically.
 
 ## 3. CURRENT STATE — WHAT ALREADY WORKS
 
-I have a **working Playwright script** (Python) that already does a real
-end-to-end run as a proof of concept. It currently uses **OrangeHRM's public demo
-site** as a stand-in for the real insurer website (so I can build safely without
-touching live insurer systems). Here is exactly what the script does today:
+The OrangeHRM demo placeholder has been **completely replaced** with the **real
+MIC (Muscat Insurance Company) insurer website**. The script is now end-to-end
+on real systems for Muscat Insurance. Here is exactly what it does today:
 
 ### Tameen (broker portal) side — REAL site, working:
-1. Opens `https://mis.tameen.om/dashboard/login` and **waits for me to log in
-   manually** (Tameen DOES require OTP — so login is a manual pause, then I press
-   ENTER and automation resumes).
-2. Clicks the **PAYMENTS** tile.
-3. Clears the **Mobile Number** filter.
-4. Sets the **date range**: today − 7 days → today + 1 day (currently +1, the
-   roadmap goal is +7).
-5. Clicks **Search** and waits for the results table (handles spinners + skeleton
-   loaders, polls until row count is stable).
-6. Reads all table rows, **filters to "Muscat Insurance" rows only**, prints them
-   numbered, and **asks me to pick which row** to open, then clicks that row's
-   **eye icon** to open the record.
-7. **Reads detail fields** from the opened record using a two-strategy
-   `read_field()`: (a) click the copy icon → read clipboard, (b) fall back to
-   several XPath DOM traversals. Fields read: First Name, Last Name, Mobile
-   Number, License ID, Product Name, Color, Model Year, Make, Modal, Trim, DOB,
-   Previous Expiry.
+1. Opens `https://mis.tameen.om/dashboard/login` and **waits for manual login**
+   (Tameen requires OTP — this is the only manual pause, then ENTER resumes automation).
+2. Clicks the **PAYMENTS tile** on the dashboard.
+3. Clicks the **"Payments by Channel"** red button (top-right of the Payments page).
+4. Reads all channel tiles from **both sections** ("Payment Done Cases" and
+   "Payment Done Document Pending Cases"), shows them numbered with their record
+   counts, and **asks the staff member to pick a channel**.
+5. Reads the records table, **filters to "Muscat Insurance" rows only**, lists
+   them numbered, and **asks which row to open**. Typing `0` here goes back to
+   the channel select. Typing `q` at any continue prompt quits.
+6. Clicks the **eye icon** on the chosen row.
+7. **Reads these fields** from the opened record:
+   First Name, Last Name, License ID, Product Name, Previous Expiry,
+   Vehicle Number (e.g. "B S-4788"), Sum Insured, Total Premium, Seats.
 
-### OrangeHRM (stand-in for insurer) side — DEMO site, working:
-8. Logs in with username/password (no OTP on the demo).
-9. Goes **PIM → Add Employee**.
-10. Fills name fields, Employee ID, saves, then fills License Number, License
-    Expiry, DOB, saves, fills a custom field with Color, saves again.
-11. Prints a clean summary of all data before filling.
+### MIC (Muscat Insurance Company) insurer — REAL site, working:
+8. **Logs in automatically** using credentials from a `.env` file (no OTP on MIC).
+   If the session from a previous run is still alive (saved profile), skips login.
+9. Home → **Policy tile** → **Create** button.
+10. Reads "Product Name" from Tameen and selects **Comprehensive or Third Party**
+    in the Policy Type dropdown, then clicks **Create** inside the popup, then
+    clicks **OK** on the confirmation dialog.
+11. Types the **License No** → clicks **"Get Licence Information" → "Get Record"**
+    (MIC auto-fills: Insured Name, DOB, Address, Lic Issue Date, Lic Expiry Date).
+12. Fills **Policy Information**: Cust Code (21252), Insured Name, Period From
+    (calculated from the previous expiry), Address (Muscat), Mobile (99435202),
+    Mulkiya Type (Renewal).
+13. Fills **plate number**, selects **plate code** via popup-LOV (handles both
+    single-letter 'A' and double-letter 'B S' plates), clicks
+    **"Get Vehicle Information" → "Get Record"** (waits ≥8 s for vehicle data).
+14. In Vehicle Information: sets **Geo Area = UAE**, switches
+    **"Road Side Assistance - Silver"** from No to **Yes** (via real double-click
+    on the editable grid), fills **Seats** (read live from Tameen), and if
+    Comprehensive fills **Sum Insured**.
+15. Clicks **Calculate**, clicks **OK** on the "unsaved changes" APEX dialog,
+    then reads **"Net Prem Incl. VAT"** from the Premium Details panel and
+    **compares it to Tameen's "Total Premium"**. Tolerance: **1 OMR**.
+    - Match → prints "PREMIUMS MATCH".
+    - Mismatch → prints a large warning banner with the difference; policy is left
+      as Draft and staff must investigate before doing anything else.
+16. The script **stops at Draft** — no auto-approve (deliberate).
 
-> **Important:** OrangeHRM is a placeholder. The real target is the insurer form
-> (see section 5). The Tameen half is already pointed at the real system.
+### Per-record loop:
+After each record (success or flagged error) the script prompts ENTER to
+**reset both tabs** (MIC back to home, Tameen back to the Payments page) and
+continue to the next policy. Type `q` to quit and close the browser.
+
+### Config values (top of main.py):
+| Name | Value | Notes |
+|---|---|---|
+| `CUSTOMER_CODE` | `21252` | Fixed for all policies |
+| `FIXED_ADDRESS` | `Muscat` | Fixed |
+| `FIXED_MOBILE` | `99435202` | Fixed |
+| `MULKIYA_TYPE` | `Renewal` | Fixed |
+| `FIXED_GEO_AREA` | `UAE` | Despite the name, the form shows "UAE" not "Oman" |
+| `PREMIUM_TOLERANCE` | `1.0` OMR | Treat premiums within 1 OMR as a match |
+| `ADDL_BENEFIT_DESC` | `ROAD SIDE ASSISTANCE - SILVER` | The exact row text in the grid |
+| `MIC_HOME_URL` | `https://portal.muscatinsurance.com:444/ords/r/mic/mic/home` | |
 
 ### Notable techniques already in the code (keep these — they work):
 - `launch_persistent_context` with a saved `automation_profile` folder so login
   sessions/cookies persist between runs.
-- `slow_mo=300` to make actions visible and stable.
-- Clipboard read permissions enabled for the copy-icon strategy.
-- `hrm_fill()` types character-by-character (`delay`) so React `onChange` fires —
-  plain `.fill()` was unreliable on React inputs.
+- `slow_mo=450` to make actions visible and stable.
+- `ignore_https_errors=True` because MIC uses a custom cert on port `:444`.
+- Clipboard read permissions enabled for Tameen's copy-icon strategy.
+- `mic_fill_by_label()` types character-by-character (`delay=20`) so APEX `onChange` fires.
 - Every interaction has **multiple fallback strategies** wrapped in try/except.
-- A `convert_date()` helper reformats dates between the two sites' formats.
+- `wait_for_apex()` waits for APEX's AJAX overlay to disappear after every APEX action.
+- `mic_handle_popup_lov()` drives the APEX popup-LOV modals (Plate Code field):
+  finds the matching row with JS, then does a REAL Playwright click (APEX ignores
+  synthetic JS clicks).
+- `mic_accept_confirm_dialog()` handles the in-page APEX HTML dialog that appears
+  after clicking Calculate. This is NOT a native browser dialog; it is a DOM
+  element with a green OK button. See `errorlog.md.txt` for the full lesson.
+- `mic_click_button()` only clicks VISIBLE buttons and skips hidden/covered ones.
+- Native browser dialogs (beforeunload "Leave site?") are auto-accepted via
+  `page.on("dialog", lambda d: d.accept())` registered on BOTH pages at startup.
+- `.env` file for MIC credentials (`MIC_USERNAME`, `MIC_PASSWORD`).
 
-### Known rough edges in the current code:
+### Known rough edges:
 - `read_field()` relies partly on the clipboard, which can be flaky.
-- Date-format constant `TAMEEN_DATE_FORMAT` may need adjusting per the real site.
-- The field-mapping into OrangeHRM is placeholder logic
-  (`last_name = make + " " + modal`, etc.) — these mappings only make sense for
-  the demo and will be replaced entirely for the real insurer form.
-- `FILTER_TO_DATE` is today + 1, but the intended business rule is today + 7.
+- The Tameen field labels for Vehicle Number, Sum Insured, Total Premium, and Seats
+  are **guessed** — they need confirming against the real record page.
+- `FILTER_TO_DATE` and date-range filtering are no longer used (replaced by the
+  "Payments by Channel" flow).
 
 ---
 
@@ -109,8 +148,8 @@ touching live insurer systems). Here is exactly what the script does today:
 
 ```
 1.  Staff identifies a policy to process on Tameen (the ONLY manual trigger)
-2.  Script navigates Tameen → Payment by Channel → Payment Done →
-    subpart → date range (−7 to +7) → Search → eye icon → open record
+2.  Script navigates Tameen → Payments → Payments by Channel →
+    choose channel → choose row → open record
 3.  Script scrapes all relevant text fields from the record
 4.  Script opens the Mulkiya (image/PDF) → AI OCR → extract Arabic fields
     (plate, chassis, civil ID, owner name, vehicle details, etc.)
@@ -118,58 +157,39 @@ touching live insurer systems). Here is exactly what the script does today:
 6.  CROSS-VERIFY document values vs. Tameen submitted values
         match     → continue automatically
         mismatch  → STOP, log the exact mismatch, alert staff, do nothing else
-7.  Open the insurer website, log in with stored credentials
-8.  Fill the insurer form (see section 5 for the field detail)
-9.  Click Calculate / Validate where required, approve, download the PDF
-        (save PDF named by policy number)
-10. Return to Tameen, upload the PDF + any extra details to confirm the policy
-11. Send the PDF to the customer's WhatsApp number
+7.  Fill the MIC insurer form (22-step flow — already working for Muscat Insurance)
+8.  Approve the policy, download the PDF (save named by policy number)
+9.  Return to Tameen, upload the PDF + any extra details to confirm the policy
+10. Send the PDF to the customer's WhatsApp number
 ```
 
 ---
 
-## 5. THE REAL INSURER FORM (already analysed)
+## 5. THE REAL INSURER FORM — MIC FIELD MAP (completed)
 
-Page title: **"Insurance Policy Form"**. Reviewed from screenshots. Key facts:
-- **All field labels are clear English.** Standard HTML form elements.
-- **No CAPTCHA. No OTP** on the insurer login.
-- Two huge time-savers — **"Get Record" auto-fill buttons**:
-  - **Get Licence Information** — enter **License No**, click Get Record →
-    site auto-populates customer fields (Lic ID, Insured Name, DOB, Address,
-    Lic Issue Date, Lic Expiry Date).
-  - **Get Vehicle Information** — choose By Plate, enter **Plate No** (+ Plate
-    Code + Plate Type), click Get Record → site auto-populates vehicle fields
-    (Make, Model, Body Type, Reg No, Chassis No, etc.).
-- Some fields use a **lookup popup** opened by a **≡ icon** (Cust Code, Make,
-  Body Type, ROP Cert No, Select Plate Code) — these need special handling.
-- **Page reloads** happen during filling — must wait for the next section.
-- A **Calculate** button and a **Validate** button must be clicked at set points.
-- **Only specific fields need filling**, not the whole form.
+All 22 steps for MIC are implemented. The source for each field:
 
-### Form sections seen:
-- **Header:** Quotation Date, Quotation No, Status, Location Name, Policy No,
-  Process Date.
-- **Get Licence Information:** License No + Get Record.
-- **Policy Information:** Policy Type, Cust Code (≡), Lic ID, Period From/To,
-  Insured Name, Lic Issue Date, Lic Expiry Date, DOB, Age, Mobile No, Address,
-  Email, Mulkiya Type, ROP Cert No (≡), Cust Type, Ref ID.
-- **Get Vehicle Information:** By Plate / By Chassis, Enter Plate No,
-  Select Plate Code (≡), Plate Type + Get Record.
-- **Vehicle Information:** Usage, Make (≡), Body Type (≡), Model, Reg No, Char,
-  Eng No, Manf Year, Model Year, Chassis No, Seats, Colour, Geo Area (default
-  Oman), Org Card, CC/Tonnage, Car Import, Sum Insured, Mortage, Add Loading,
-  Special Dis/NCD, Remarks + Calculate + Validate.
-- **Premium Details panel** (right side, auto-calculated, read-only).
-
-### The field-to-source map is NOT YET DONE (next big task)
-Every field that must be filled needs tagging as one of:
-1. **From Tameen** (scraped from the open record)
-2. **From Mulkiya** (AI OCR)
-3. **From License** (AI OCR)
-4. **Fixed value** (same every policy — e.g. broker phone number, Location Name,
-   Geo Area = Oman, certain dropdown defaults)
-
-Completing this map is the prerequisite before writing the insurer-fill script.
+| MIC Field | Source | Value / Logic |
+|---|---|---|
+| Policy Type | Tameen "Product Name" | "Third Party" or "Comprehensive" in name |
+| License No | Tameen "License ID" | Direct |
+| Insured Name | MIC auto-fill via Get Licence | After Get Record |
+| DOB, Address, Lic dates | MIC auto-fill via Get Licence | After Get Record |
+| Cust Code | Fixed | 21252 |
+| Period From | Tameen "Previous Expiry" | +1 day if not expired, else today |
+| Mobile No | Fixed | 99435202 |
+| Address | Fixed | Muscat |
+| Mulkiya Type | Fixed | Renewal |
+| Plate No | Tameen "Vehicle Number" | Digits after the last dash |
+| Plate Code | Tameen "Vehicle Number" | Everything before the last dash |
+| Vehicle fields | MIC auto-fill via Get Vehicle | After Get Record (Plate) |
+| Geo Area | Fixed | UAE |
+| Road Side Assistance | Fixed | Always set to Yes |
+| Seats | Tameen "Seats" (or similar label) | Live read, digits only |
+| Sum Insured | Tameen "Sum Insured" | Comprehensive policies only |
+| Calculate | Button click | Step 20 |
+| OK dialog | APEX in-page dialog | Step 21 — mic_accept_confirm_dialog() |
+| Net Prem Incl. VAT | MIC Premium panel (read-only) | Compared to Tameen total |
 
 ---
 
@@ -177,23 +197,18 @@ Completing this map is the prerequisite before writing the insurer-fill script.
 
 | Layer | Tool | Notes |
 |---|---|---|
-| Browser automation | **Playwright (Python)** | Already proven. Standard fixed-step Playwright, NOT Browser Use — keeps cost at zero and I already have working code. |
-| Document OCR | **Claude API (Sonnet)** | Only AI cost. Used once or twice per policy to read Arabic Mulkiya/License. Sonnet chosen for Arabic accuracy — a wrong chassis/civil ID is a serious business error. |
-| Cross-verification | Claude API or simple text comparison | Compare OCR output vs. Tameen data; stop on mismatch. |
-| WhatsApp delivery | **whatsapp-web.js (free)** | Sends via my own WhatsApp account, like WhatsApp Web. No Meta API fees at this volume. (Official WhatsApp Business API is the paid upgrade path if reliability ever demands it.) |
-| Hosting (later) | **Hetzner cloud server** (~$6/mo) | Runs 24/7. Not needed yet — currently runs on my own laptop. |
+| Browser automation | **Playwright (Python)** | Proven and working. Standard fixed-step Playwright, NOT Browser Use. |
+| Document OCR | **Claude API (Sonnet)** | NOT YET IMPLEMENTED. Only AI cost. Used for Arabic Mulkiya/License. |
+| Cross-verification | Not yet built | Will compare OCR output vs. Tameen data; stop on mismatch. |
+| WhatsApp delivery | **whatsapp-web.js (free)** | NOT YET IMPLEMENTED. Sends via own WhatsApp account. |
+| Hosting (later) | **Hetzner cloud server** (~$6/mo) | NOT YET. Currently runs on laptop. |
+| Credentials | `.env` file | MIC_USERNAME, MIC_PASSWORD. Never committed. |
 
 ### Tools deliberately DROPPED from earlier plans:
-- **n8n** — removed. Its 3 jobs (detect PDF, upload to Tameen, send WhatsApp) are
-  just extra steps in the Python script. Fewer moving parts.
-- **Browser Use / AI-driven browsing** — not used for production filling. It calls
-  the AI on every page action, which is the expensive part. Plain Playwright is
-  free and I already have it working. (Browser Use / the Playwright MCP can still
-  be handy during *building* to explore a page, but not in the running system.)
+- **n8n** — removed. Its 3 jobs are just extra steps in the Python script.
+- **Browser Use / AI-driven browsing** — not used in production. Plain Playwright is free.
 - **WhatsApp Business Cloud API** — replaced by free whatsapp-web.js for now.
-- **Google Document AI / Tesseract** — considered for OCR. Tesseract is free but
-  weak on phone-photo Arabic (risky for chassis/civil ID). Claude API stays for
-  OCR because accuracy here matters most.
+- **Google Document AI / Tesseract** — Claude API stays for OCR (Arabic accuracy matters).
 
 ---
 
@@ -218,55 +233,71 @@ only cost is the $20/mo Claude Pro subscription I already pay.)
 ✅  Proof of concept: Playwright fills a form with scraped data (DONE)
 ✅  Tameen navigation + login pause + record open + field read (WORKING)
 ✅  Insurer form analysed, confirmed automatable, no CAPTCHA/OTP (DONE)
-⬜  Build the field-to-source map for the insurer form (NEXT — do this first)
-⬜  Swap the OrangeHRM demo target for the REAL insurer form
+✅  Build the field-to-source map for the insurer form (DONE)
+✅  Swap the OrangeHRM demo target for the REAL MIC insurer form (DONE)
+✅  Full 22-step MIC fill + Calculate + premium comparison (WORKING)
+✅  Per-record loop with reset between policies (WORKING)
 ⬜  Add Claude API OCR for Mulkiya + License
 ⬜  Add cross-verification (stop + alert on mismatch)
-⬜  Add Calculate / Validate / approve / download-PDF steps
+⬜  Add Validate / approve / download-PDF steps (after Calculate is confirmed correct)
 ⬜  Add upload-PDF-back-to-Tameen step
 ⬜  Add WhatsApp delivery (whatsapp-web.js)
+⬜  Confirm Tameen field labels: Vehicle Number, Sum Insured, Total Premium, Seats
 ⬜  Move from laptop to Hetzner server for 24/7 running
 ⬜  Repeat for insurers #2 and #3
 ```
 
 ### The single most useful next step
-Document the **field-to-source map** for the insurer form (section 5). Once each
-field is tagged (Tameen / Mulkiya / License / Fixed), the insurer-fill script can
-be written with no remaining unknowns.
+**Confirm the Tameen field labels** (Vehicle Number, Sum Insured, Total Premium,
+Seats) by checking what the actual text on the Tameen View Details page says, then
+update `main.py` if any labels are wrong. Once these are confirmed the Tameen read
+step is fully verified. After that, the next big task is the **Validate / approve /
+download-PDF flow** on MIC.
 
 ---
 
 ## 9. CURRENT CODE — STRUCTURE SUMMARY
 
-The working script (Python, `playwright.sync_api`) is organised as:
+Single file: `main.py` (Python, `playwright.sync_api`), organised as:
 
-- **CONFIG block:** OrangeHRM demo credentials, Tameen date format, computed
-  filter dates.
+- **CONFIG block:** MIC URL, fixed field values, policy type strings, premium
+  tolerance, step pause duration. Credentials loaded from `.env` via `python-dotenv`.
 - **Shared helpers:** `read_field()` (clipboard + XPath fallbacks),
-  `hrm_fill()` (keystroke typing for React inputs), `convert_date()`.
-- **Tameen helpers:** `tameen_go_to_payments()`, `tameen_clear_mobile_filter()`,
-  `tameen_set_date_filters()`, `tameen_click_search()` (robust table-load wait),
-  `tameen_select_and_click_eye()` (reads rows, filters Muscat Insurance, asks me
-  to pick, clicks eye via 4 fallback strategies).
-- **Main flow:** opens 2 tabs (Tameen + OrangeHRM), pauses for manual Tameen
-  login/OTP, runs Tameen navigation, reads fields, maps them, logs into
-  OrangeHRM, fills + saves the employee record, prints a summary, closes.
-
-The full current script is kept separately — paste it into the session alongside
-this file when working on code.
+  `keystroke_fill()`, date parsing (`parse_tameen_date`, `compute_period_from`),
+  `split_plate()` (splits "B S-4788" into code "B S" and number "4788").
+- **APEX helpers:** `wait_for_apex()`, `mic_fill_by_label()`, `mic_select_by_label()`,
+  `mic_click_button()` (visible-only), `mic_accept_confirm_dialog()` (in-page APEX
+  HTML dialog), `mic_handle_popup_lov()` (real-click popup-LOV for Plate Code),
+  `mic_set_cust_code()` (type + Enter, handles any popup, verifies).
+- **MIC flow helpers:** `mic_login_if_needed()`, `mic_click_tile()`,
+  `mic_open_policy_create()`, `mic_choose_policy_type_and_create()`,
+  `mic_get_licence()`, `mic_fill_policy_info()`, `mic_get_vehicle()`,
+  `mic_enable_addl_benefit()`, `mic_fill_vehicle_info()`, `mic_calculate_and_check()`,
+  `read_premium()`.
+- **Tameen helpers:** `tameen_go_to_payments()`, `tameen_click_payments_by_channel()`,
+  `tameen_select_channel()` (reads ALL tiles from BOTH sections with JS, numbered menu),
+  `tameen_select_and_click_eye()` (reads rows, filters Muscat Insurance, numbered menu,
+  supports going back to channel select by typing 0).
+- **Reset helpers:** `tameen_reset_to_payments()` (in-app back-navigation),
+  `mic_reset_to_home()` (goto MIC home URL).
+- **Main flow:** opens 2 tabs (Tameen + MIC), registers native-dialog auto-accept on
+  both, pauses for manual Tameen login/OTP (ONCE), then enters the per-record loop:
+  Tameen navigate → read fields → MIC fill → Calculate → premium check → staff reviews
+  → ENTER to reset + continue, or 'q' to quit.
 
 ---
 
 ## 10. OPEN QUESTIONS / DECISIONS NOT YET MADE
 
-- **Which record to process:** currently I manually pick the row. Decide whether
-  the real system processes one chosen record, or loops all "Payment Done"
-  Muscat Insurance records automatically.
+- **Tameen field labels** for Vehicle Number, Sum Insured, Total Premium, Seats are
+  guessed — need confirmation against the real Tameen View Details page.
+- **Validate step:** is there a Validate button on the MIC form that must be clicked
+  after Calculate? Where in the flow does it appear?
+- **Approve / download:** what exactly happens after Validate — what button approves
+  the policy and triggers the PDF download? What is the PDF named?
+- **PDF upload to Tameen:** what "additional details" does Tameen require alongside
+  the PDF to confirm a policy?
 - **Mulkiya/License access:** how exactly are these files opened from the Tameen
-  record (download link? inline viewer? new tab?) — needs checking so the script
-  can grab the file to send to OCR.
-- **Date range:** confirm the real filter rule (roadmap says −7 to +7 days).
-- **PDF upload details:** what "additional details" Tameen requires alongside the
-  PDF upload to confirm a policy.
-- **Insurer login storage:** how to store the insurer credentials safely in the
-  script/server.
+  record (download link? inline viewer? new tab?) — needed for OCR.
+- **Multi-insurer:** insurers #2 and #3 will need their own MIC-equivalent fill
+  functions. No work started on them yet.
