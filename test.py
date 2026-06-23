@@ -65,6 +65,9 @@ STEP_PAUSE = 500
 #  NEW INDIA ASSURANCE  —  CONFIGURATION  (second insurer, runs alongside MIC)
 # ══════════════════════════════════════════════════════════════════════════════
 NI_LOGIN_URL = "https://www.newindiaoman.com/Account/login.aspx"
+# The Motor Policy form itself. We open this directly (it's reliable once logged
+# in) instead of hovering the flaky Transactions menu.
+NI_MOTOR_POLICY_URL = "https://www.newindiaoman.com/AgBr/mtrPolicy.aspx"
 
 # New India is an OLD, SLOW ASP.NET site that reloads the whole page after many
 # actions. This is the pause (in milliseconds) we wait after EVERY action for
@@ -1683,52 +1686,76 @@ def ni_fill_by_label(page, label: str, value: str, press_escape: bool = False) -
 def ni_read_by_label(page, label: str, quiet: bool = False) -> str:
     """Read the value New India already shows next to a label.
 
-    Handles both a real input box (input_value) and plain text (inner_text).
-    quiet=True is used while polling so it does not spam the screen.
+    Done in the browser (JavaScript) so it works no matter how the form is laid
+    out: it finds the element whose OWN text is the label (ignoring any Arabic
+    translation in the same cell, and never matching a parent cell that wraps
+    several rows), then reads the value control in the SAME table row — falling
+    back to the nearest control after the label. quiet=True hushes the polling.
     """
     sc = _ni_scope(page)
-    getters = [
-        # EXACT label in its own cell → value in the next cell (precise; avoids
-        # matching a parent cell that wraps several rows — the Model→NISSAN bug)
-        lambda: sc.locator(
-            f'xpath=//td[normalize-space(.)="{label}"]/following-sibling::td[1]//input[not(@type="hidden")][1]'
-        ).first,
-        lambda: sc.locator(
-            f'xpath=//td[normalize-space(.)="{label}"]/following-sibling::td[1]//textarea[1]'
-        ).first,
-        # a LEAF cell containing the label (handles "Label  العربية" in one cell)
-        lambda: sc.locator(
-            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following-sibling::td[1]//input[not(@type="hidden")][1]'
-        ).first,
-        lambda: sc.get_by_label(label, exact=False).first,
-        # plain-text value cell (read-only fields shown as text, not an input)
-        lambda: sc.locator(
-            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following-sibling::td[1]'
-        ).first,
-    ]
-    for g in getters:
-        try:
-            el = g()
-            if el.count() == 0:
-                continue
-            val = ""
-            try:
-                val = (el.input_value(timeout=3000) or "").strip()
-            except Exception:
-                val = ""
-            if not val:
-                try:
-                    t = (el.inner_text(timeout=3000) or "").strip()
-                    if t and t != label and label not in t:
-                        val = t
-                except Exception:
-                    pass
-            if val:
-                if not quiet:
-                    print(f"  ✅  Read New India '{label}': {val}")
-                return val
-        except Exception:
-            continue
+    val = ""
+    try:
+        val = sc.evaluate("""(label) => {
+            const norm  = s => (s || '').replace(/\\s+/g, ' ').trim();
+            // keep only ASCII so an Arabic translation sharing the cell is ignored
+            const clean = s => norm(s).replace(/[^\\x00-\\x7F]/g, '').replace(/[:*]/g, '').trim();
+            const want = label.toUpperCase();
+
+            const isVal = i =>
+                (i.tagName === 'TEXTAREA') ||
+                (i.tagName === 'INPUT' && !['hidden','checkbox','radio','button','submit']
+                    .includes((i.getAttribute('type') || 'text').toLowerCase()));
+
+            // find EVERY element whose OWN direct text is exactly the label (there
+            // may be a few; we try each and keep the best visual match below)
+            const tags = ['td','th','label','span','div','b','strong','font','p'];
+            const labs = [];
+            for (const el of document.querySelectorAll(tags.join(','))) {
+                let own = '';
+                for (const n of el.childNodes) if (n.nodeType === 3) own += n.textContent;
+                if (clean(own).toUpperCase() === want) labs.push(el);
+            }
+            if (!labs.length) return '';
+
+            const ctrls = [...document.querySelectorAll('input,textarea')].filter(isVal);
+
+            // VISUAL match: the field's box sits on the SAME line as its label and
+            // just to its right. This matches what you see on screen and does NOT
+            // depend on the HTML order (which was making Brand/Model/Year all read
+            // the same value). Pick the nearest such box.
+            let best = null, bestScore = Infinity;
+            for (const lab of labs) {
+                const lr = lab.getBoundingClientRect();
+                if (lr.width === 0 && lr.height === 0) continue;
+                for (const c of ctrls) {
+                    const cr = c.getBoundingClientRect();
+                    if (cr.width === 0 && cr.height === 0) continue;        // hidden
+                    const sameLine = (cr.bottom > lr.top + 2) && (cr.top < lr.bottom - 2);
+                    if (!sameLine) continue;                                // different row
+                    if (cr.left < lr.left - 2) continue;                    // must be to the right
+                    const score = (cr.left - lr.right) + Math.abs(
+                        (cr.top + cr.bottom) / 2 - (lr.top + lr.bottom) / 2);
+                    if (score < bestScore) { bestScore = score; best = c; }
+                }
+            }
+            if (best) return best.value != null ? best.value : '';
+
+            // Fallback: nearest control after the first label in document order.
+            for (const c of ctrls) {
+                if (labs[0].compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) {
+                    return c.value != null ? c.value : '';
+                }
+            }
+            return '';
+        }""", label)
+    except Exception:
+        val = ""
+
+    val = (val or "").strip()
+    if val:
+        if not quiet:
+            print(f"  ✅  Read New India '{label}': {val}")
+        return val
     if not quiet:
         print(f"  ⚠️  Could not read New India '{label}'")
     return ""
@@ -2124,42 +2151,65 @@ def ni_login_if_needed(page) -> None:
         print("  ✅  Logged in to New India")
 
 
+def _ni_form_present(page) -> bool:
+    """True once the Motor Policy form is actually loaded somewhere we can reach it."""
+    return _ni_scope(page) is not page
+
+
 def ni_go_to_motor_policy(page) -> None:
-    """Open the Motor Policy form: hover 'Transactions', then click 'Motor Policy'."""
-    print("\n── New India: opening Transactions → Motor Policy ──")
-    # Hover the Transactions menu so its sub-menu drops down.
-    for sel in ['a:has-text("Transactions")', 'span:has-text("Transactions")', ':text("Transactions")']:
-        try:
-            m = page.locator(sel).first
-            if m.is_visible():
-                m.hover()
-                break
-        except Exception:
-            continue
-    page.wait_for_timeout(600)
-    # Click the Motor Policy sub-menu item.
-    clicked = False
-    for sel in ['a:has-text("Motor Policy")', 'span:has-text("Motor Policy")', ':text("Motor Policy")']:
-        try:
-            mp = page.locator(sel).first
-            if mp.is_visible():
-                mp.click(); clicked = True; break
-        except Exception:
-            continue
-    if not clicked:
-        # JS fallback — click anything whose text is exactly 'Motor Policy'.
-        page.evaluate("""() => {
-            const t = [...document.querySelectorAll('a, span, li, div')]
-                .find(e => (e.innerText || '').trim() === 'Motor Policy');
-            if (t) t.click();
-        }""")
-    # Wait until the Motor Policy page has actually loaded.
+    """Open the Motor Policy form.
+
+    Primary path: go STRAIGHT to the form's URL — this is reliable once logged in
+    and avoids the flaky Transactions hover-menu (which was silently failing and
+    leaving us on the welcome page). If that doesn't bring up the form, fall back
+    to the menu. We then VERIFY the form is really present instead of assuming it.
+    """
+    print("\n── New India: opening the Motor Policy form ──")
+
+    # 1) Direct navigation to the form.
     try:
-        page.wait_for_url("**mtrPolicy.aspx**", timeout=60000)
-    except Exception:
-        pass
-    ni_settle(page)
-    print("  ✅  Motor Policy form open")
+        page.goto(NI_MOTOR_POLICY_URL, wait_until="domcontentloaded", timeout=60000)
+        ni_settle(page)
+    except Exception as e:
+        print(f"  …  direct open failed ({e}); will try the Transactions menu")
+
+    # 2) Fallback: the Transactions → Motor Policy menu, if the form isn't here yet.
+    if not _ni_form_present(page):
+        print("  …  form not detected — trying the Transactions menu")
+        for sel in ['a:has-text("Transactions")', 'span:has-text("Transactions")', ':text("Transactions")']:
+            try:
+                m = page.locator(sel).first
+                if m.is_visible():
+                    m.hover(); break
+            except Exception:
+                continue
+        page.wait_for_timeout(600)
+        clicked = False
+        for sel in ['a:has-text("Motor Policy")', 'span:has-text("Motor Policy")', ':text("Motor Policy")']:
+            try:
+                mp = page.locator(sel).first
+                if mp.is_visible():
+                    mp.click(); clicked = True; break
+            except Exception:
+                continue
+        if not clicked:
+            page.evaluate("""() => {
+                const t = [...document.querySelectorAll('a, span, li, div')]
+                    .find(e => (e.innerText || '').trim() === 'Motor Policy');
+                if (t) t.click();
+            }""")
+        try:
+            page.wait_for_url("**mtrPolicy.aspx**", timeout=60000)
+        except Exception:
+            pass
+        ni_settle(page)
+
+    # 3) Verify — don't lie about success.
+    if _ni_form_present(page):
+        print("  ✅  Motor Policy form open")
+    else:
+        print("  ⚠️  Could NOT open the Motor Policy form automatically.")
+        print("      Please click Transactions → Motor Policy by hand, then re-run / continue.")
 
 
 def ni_report_scope(page) -> None:
