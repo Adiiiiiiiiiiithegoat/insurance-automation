@@ -23,3 +23,6 @@ env/
 Thumbs.db
 .DS_Store
 *.swp
+
+# Screenshots may contain customer PII — never commit
+screenshots/

@@ -12,6 +12,8 @@ import re
 #
 #       MIC_USERNAME=your_username_here
 #       MIC_PASSWORD=your_new_password_here
+#       NI_USERNAME=your_new_india_username_here
+#       NI_PASSWORD=your_new_india_password_here
 #
 #  .env is listed in .gitignore so it never gets uploaded anywhere.
 #  Never upload .env to Claude, to a project, or to GitHub.
@@ -21,6 +23,11 @@ MIC_USERNAME = os.getenv("MIC_USERNAME", "")
 MIC_PASSWORD = os.getenv("MIC_PASSWORD", "")
 if not MIC_USERNAME or not MIC_PASSWORD:
     print("⚠️  MIC credentials not found in .env — login will be skipped/may fail.")
+
+NI_USERNAME = os.getenv("NI_USERNAME", "")
+NI_PASSWORD = os.getenv("NI_PASSWORD", "")
+if not NI_USERNAME or not NI_PASSWORD:
+    print("⚠️  New India credentials not found in .env — login will be skipped/may fail.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONFIGURATION
@@ -52,6 +59,31 @@ PREMIUM_TOLERANCE = 1.0   # OMR — treat as a match if within 1 OMR
 # Small pause (milliseconds) added after most actions so the site has time to
 # react and nothing breaks from going too fast. Increase if things still race.
 STEP_PAUSE = 500
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  NEW INDIA ASSURANCE  —  CONFIGURATION  (second insurer, runs alongside MIC)
+# ══════════════════════════════════════════════════════════════════════════════
+NI_LOGIN_URL = "https://www.newindiaoman.com/Account/login.aspx"
+
+# New India is an OLD, SLOW ASP.NET site that reloads the whole page after many
+# actions. This is the pause (in milliseconds) we wait after EVERY action for
+# that reload to finish. If fields get skipped, make this bigger.
+NI_STEP_PAUSE = 800
+
+# ── Fixed values that are the SAME on every New India policy ──
+NI_CUSTOMER          = "CASH CUSTOMER - ONEIC TAMEEN SPC"   # exact dropdown text
+NI_TELEPHONE         = "99435202"
+NI_TRANSMISSION      = "Auto"
+NI_MUSIC_SYSTEM      = "Yes"
+NI_EXTERNAL_DAMAGES  = "No"
+NI_TYRE_CONDITION    = "good"
+# ── Radio-button choices (these are buttons you click, not dropdowns) ──
+NI_PAYMENT_MODE      = "Cash"      # Cash / Card
+NI_FIRST_REG         = "Yes"       # Oman's First Registration
+NI_VEHICLE_TYPE      = "Standard"  # Standard / Electric
+NI_PAYBYLINK         = "No"        # Payment thru Paybylink
+NI_IMPORT_VEHICLE    = "No"        # Import Vehicle
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -924,17 +956,19 @@ def tameen_select_channel(page) -> None:
 
 
 def tameen_select_and_click_eye(page):
-    """Step 4: list the Muscat Insurance rows and ask which to open.
+    """Step 4: list the rows we can process (Muscat Insurance AND New India) and
+    ask which to open.
 
-    Returns a (status, record_text) tuple:
-      ("BACK", None)        — user typed 0 (go back to the channel select)
-      ("OK", "<row text>")  — the chosen record was opened; the text is kept so
-                              the main flow can show it in the success / flagged
-                              error summary.
+    Each row is tagged so you can see which insurer it belongs to, and the chosen
+    insurer is returned so the main flow knows which company's form to fill.
+
+    Returns a (status, record_text, company) tuple:
+      ("BACK", None, None)            — user typed 0 (go back to the channel select)
+      ("OK", "<row text>", "MIC")     — a Muscat Insurance record was opened
+      ("OK", "<row text>", "NEW_INDIA") — a New India record was opened
     """
-    print("\n── Tameen Step 4: Select which record to open (Muscat Insurance only) ──")
+    print("\n── Tameen Step 4: Select which record to open (Muscat Insurance + New India) ──")
     page.wait_for_timeout(1500)
-    COMPANY_FILTER = "muscat insurance"
 
     rows_data = page.evaluate("""
         () => {
@@ -973,23 +1007,41 @@ def tameen_select_and_click_eye(page):
     all_rows = rows_data["rows"]
     company_col_idx = next((i for i, h in enumerate(headers[1:], start=0) if "company" in h.lower()), None)
 
-    def is_muscat(r):
-        if company_col_idx is not None:
-            cell_val = r["cells"][company_col_idx] if company_col_idx < len(r["cells"]) else ""
+    def company_of(r):
+        """Return 'MIC' for a Muscat Insurance row, 'NEW_INDIA' for a New India
+        row, or None for any other company (those rows are hidden)."""
+        if company_col_idx is not None and company_col_idx < len(r["cells"]):
+            cell_val = r["cells"][company_col_idx]
         else:
             cell_val = r["text"]
-        return COMPANY_FILTER in cell_val.lower()
+        cv = cell_val.lower()
+        if "muscat insurance" in cv:
+            return "MIC"
+        if "new india" in cv:
+            return "NEW_INDIA"
+        return None
 
-    filtered = [r for r in all_rows if is_muscat(r)]
+    # Keep only the rows whose insurer we know how to process, and remember which
+    # insurer each one is so we can route to the right flow after it is opened.
+    filtered = []
+    for r in all_rows:
+        comp = company_of(r)
+        if comp is not None:
+            r["company"] = comp
+            filtered.append(r)
     if not filtered:
-        print(f"  ⚠️  No rows matched '{COMPANY_FILTER}'. Showing all {len(all_rows)} rows.")
+        print(f"  ⚠️  No Muscat Insurance or New India rows found. Showing all {len(all_rows)} rows.")
+        for r in all_rows:
+            r["company"] = company_of(r)   # may be None for unknown companies
         filtered = all_rows
 
+    TAG = {"MIC": "[MIC]      ", "NEW_INDIA": "[New India]", None: "[Other]    "}
     print("\n" + "=" * 70)
-    print(f"  MUSCAT INSURANCE RECORDS  ({len(filtered)} of {len(all_rows)} total rows)")
+    print(f"  RECORDS WE CAN PROCESS  ({len(filtered)} of {len(all_rows)} total rows)")
     print("=" * 70)
     for i, r in enumerate(filtered, start=1):
-        print(f"  [{i:>2}]  {r['text'] or '(no text)'}")
+        tag = TAG.get(r.get("company"), "[?]        ")
+        print(f"  [{i:>2}]  {tag}  {r['text'] or '(no text)'}")
     print("-" * 70)
     print("  [ 0]  ⤴  Go back (re-open 'Payments by Channel' → choose another channel)")
     print("=" * 70)
@@ -1003,7 +1055,7 @@ def tameen_select_and_click_eye(page):
             continue
         if choice == 0:
             print("\n  ⤴  Going back to the channel select...")
-            return "BACK", None
+            return "BACK", None, None
         if 1 <= choice <= len(filtered):
             break
         print("  Please enter a valid number in range.")
@@ -1047,7 +1099,7 @@ def tameen_select_and_click_eye(page):
             # 'domcontentloaded'; this was the last holdout.
             page.wait_for_load_state("domcontentloaded")
             print("  ✅  Opened record")
-            return "OK", selected["text"]
+            return "OK", selected["text"], selected.get("company")
     except Exception:
         pass
     raise RuntimeError(f"Could not open row {choice}.")
@@ -1510,6 +1562,807 @@ def mic_calculate_and_check(page, tameen_total: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  NEW INDIA ASSURANCE (INSURER #2)  —  HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+#  New India's website is an OLD, SLOW ASP.NET site. After you type into some
+#  boxes — and after EVERY button or tab click — the WHOLE page reloads. That
+#  reload throws away any element we grabbed a moment ago, so the two golden
+#  rules here are:
+#     1. After EVERY action, call ni_settle() to wait for the reload to finish.
+#     2. NEVER reuse an element across an action — always find it again fresh.
+#  The label-based helpers below already re-find their field on every call.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def ni_settle(page) -> None:
+    """Wait for a New India postback (whole-page reload) to finish, then pause."""
+    try:
+        page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        pass
+    page.wait_for_timeout(NI_STEP_PAUSE)
+
+
+def _ni_scope(page):
+    """Return the FRAME that actually holds the Motor Policy form, wherever it is.
+
+    New India's form may be drawn inside an <iframe>, OR the 'Motor Policy' menu may
+    open it in a SEPARATE browser tab. Either way the top-level page locators find
+    nothing (which is why every field 'could not be found'). So we scan EVERY tab in
+    the browser and EVERY frame in each tab, and return the first frame that contains
+    a stable bit of the form's text. Re-resolved on every call (postbacks reload the
+    frame). Falls back to the original page if the form can't be found yet.
+    """
+    markers = ["Show Information", "Primary Information", "Previous Policy", "Reg.No"]
+    try:
+        pages = page.context.pages
+    except Exception:
+        pages = [page]
+    for _ in range(20):                      # the form/tab may still be loading
+        for pg in pages:
+            try:
+                frames = pg.frames
+            except Exception:
+                continue
+            for fr in frames:
+                try:
+                    for m in markers:
+                        if fr.locator(f'xpath=//*[contains(normalize-space(.),"{m}")]').count() > 0:
+                            return fr
+                except Exception:
+                    continue
+        # nothing yet — wait a moment, refresh the tab list (a new tab may open)
+        try:
+            page.wait_for_timeout(300)
+            pages = page.context.pages
+        except Exception:
+            break
+    return page
+
+
+def ni_fill_by_label(page, label: str, value: str, press_escape: bool = False) -> bool:
+    """Type a value into a New India text box found by the words next to it.
+
+    New India uses a TABLE layout: the label sits in one cell and the input box
+    in the next cell (or just after the label). We try several ways to find it,
+    clear the box, type slowly so the site keeps up, then wait for the reload.
+    Set press_escape=True for date fields so the date-picker is dismissed.
+    """
+    value = str(value)
+    sc = _ni_scope(page)
+    getters = [
+        # 1) EXACT label in its own cell → control in the very next cell (most precise;
+        #    avoids matching a parent cell that wraps several rows, and avoids jumping
+        #    into a neighbouring field — the bugs that mixed up Model / External Damages)
+        lambda: sc.locator(
+            f'xpath=//td[normalize-space(.)="{label}"]/following-sibling::td[1]//input[not(@type="hidden")][1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//td[normalize-space(.)="{label}"]/following-sibling::td[1]//textarea[1]'
+        ).first,
+        # 2) a LEAF cell containing the label (handles "Label  العربية" in one cell)
+        lambda: sc.locator(
+            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following-sibling::td[1]//input[not(@type="hidden")][1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following-sibling::td[1]//textarea[1]'
+        ).first,
+        # 3) a proper <label> association
+        lambda: sc.get_by_label(label, exact=False).first,
+        # 4) last-resort broad search (can jump to a neighbouring field — kept LAST)
+        lambda: sc.locator(
+            f'xpath=//label[contains(normalize-space(.),"{label}")]/following::input[not(@type="hidden")][1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//*[contains(normalize-space(text()),"{label}")]/following::textarea[1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//*[contains(normalize-space(text()),"{label}")]/following::input[not(@type="hidden")][1]'
+        ).first,
+    ]
+    for g in getters:
+        try:
+            el = g()
+            if el.count() == 0:        # skip a getter that matched nothing (fast, no wait)
+                continue
+            el.scroll_into_view_if_needed(timeout=10000)
+            el.click()
+            el.press("Control+a")
+            el.press("Backspace")
+            el.type(value, delay=20)
+            if press_escape:
+                el.press("Escape")     # close any date-picker that popped up
+            print(f"  ✅  Filled '{label}' = {value}")
+            ni_settle(page)
+            return True
+        except Exception:
+            continue
+    print(f"  ⚠️  Could not fill '{label}' — please set it by hand.")
+    return False
+
+
+def ni_read_by_label(page, label: str, quiet: bool = False) -> str:
+    """Read the value New India already shows next to a label.
+
+    Handles both a real input box (input_value) and plain text (inner_text).
+    quiet=True is used while polling so it does not spam the screen.
+    """
+    sc = _ni_scope(page)
+    getters = [
+        # EXACT label in its own cell → value in the next cell (precise; avoids
+        # matching a parent cell that wraps several rows — the Model→NISSAN bug)
+        lambda: sc.locator(
+            f'xpath=//td[normalize-space(.)="{label}"]/following-sibling::td[1]//input[not(@type="hidden")][1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//td[normalize-space(.)="{label}"]/following-sibling::td[1]//textarea[1]'
+        ).first,
+        # a LEAF cell containing the label (handles "Label  العربية" in one cell)
+        lambda: sc.locator(
+            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following-sibling::td[1]//input[not(@type="hidden")][1]'
+        ).first,
+        lambda: sc.get_by_label(label, exact=False).first,
+        # plain-text value cell (read-only fields shown as text, not an input)
+        lambda: sc.locator(
+            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following-sibling::td[1]'
+        ).first,
+    ]
+    for g in getters:
+        try:
+            el = g()
+            if el.count() == 0:
+                continue
+            val = ""
+            try:
+                val = (el.input_value(timeout=3000) or "").strip()
+            except Exception:
+                val = ""
+            if not val:
+                try:
+                    t = (el.inner_text(timeout=3000) or "").strip()
+                    if t and t != label and label not in t:
+                        val = t
+                except Exception:
+                    pass
+            if val:
+                if not quiet:
+                    print(f"  ✅  Read New India '{label}': {val}")
+                return val
+        except Exception:
+            continue
+    if not quiet:
+        print(f"  ⚠️  Could not read New India '{label}'")
+    return ""
+
+
+def _ni_find_select(page, label):
+    """Find a New India dropdown (<select>) by the words next to it. None if missing.
+    The <select>-specific XPaths are tried FIRST so a label like 'Customer' lands on
+    the real dropdown and never on a same-named text box (e.g. 'Customer Name')."""
+    sc = _ni_scope(page)
+    getters = [
+        # EXACT label in its own cell → the dropdown in the next cell (precise)
+        lambda: sc.locator(
+            f'xpath=//td[normalize-space(.)="{label}"]/following-sibling::td[1]//select[1]'
+        ).first,
+        # a LEAF cell containing the label → next cell's dropdown
+        lambda: sc.locator(
+            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following-sibling::td[1]//select[1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//td[contains(normalize-space(.),"{label}") and not(.//td)]/following::select[1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//label[contains(normalize-space(.),"{label}")]/following::select[1]'
+        ).first,
+        lambda: sc.get_by_label(label, exact=False).first,
+    ]
+    for g in getters:
+        try:
+            el = g()
+            if el.count() > 0:
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def ni_select_exact(page, label: str, option_text: str) -> bool:
+    """Pick an EXACT option in a New India dropdown found by its label."""
+    sel = _ni_find_select(page, label)
+    if sel is not None:
+        try:
+            sel.select_option(label=option_text)
+            print(f"  ✅  Selected '{label}' = {option_text}")
+            ni_settle(page)
+            return True
+        except Exception:
+            pass
+    # Fallback: open it and click the option text.
+    try:
+        sc = _ni_scope(page)
+        if sel is not None:
+            sel.click()
+        else:
+            sc.get_by_text(label, exact=False).first.click()
+        page.wait_for_timeout(300)
+        sc.get_by_text(option_text, exact=True).first.click()
+        print(f"  ✅  Selected '{label}' = {option_text} (click fallback)")
+        ni_settle(page)
+        return True
+    except Exception:
+        print(f"  ⚠️  Could not select '{label}' = {option_text} — please set it by hand.")
+        return False
+
+
+def ni_select_contains(page, label: str, substrings) -> bool:
+    """Pick the dropdown option that contains ALL of the given substrings
+    (case-insensitive). Used when we don't know the exact option text — e.g. the
+    car Make / Model / Body Type / Coverage Type lists. Prints which option it
+    chose so you can double-check it picked the right one.
+    """
+    wanted = [str(s).upper() for s in substrings]
+    sel = _ni_find_select(page, label)
+    if sel is None:
+        print(f"  ⚠️  Could not find the '{label}' dropdown — please set it by hand "
+              f"(looking for an option containing: {', '.join(map(str, substrings))}).")
+        return False
+    try:
+        options = sel.locator("option").all_inner_texts()
+    except Exception:
+        options = []
+    chosen = None
+    for opt in options:
+        up = opt.upper()
+        if all(w in up for w in wanted):
+            chosen = opt
+            break
+    if chosen is None:
+        print(f"  ⚠️  No '{label}' option contained {', '.join(map(str, substrings))} — "
+              f"please pick it by hand. Options seen: {options}")
+        return False
+    try:
+        sel.select_option(label=chosen)
+        print(f"  ✅  Selected '{label}' = {chosen}   (matched: {', '.join(map(str, substrings))})")
+        ni_settle(page)
+        return True
+    except Exception:
+        try:
+            sc = _ni_scope(page)
+            sel.click()
+            page.wait_for_timeout(300)
+            sc.get_by_text(chosen, exact=True).first.click()
+            print(f"  ✅  Selected '{label}' = {chosen} (click fallback)")
+            ni_settle(page)
+            return True
+        except Exception:
+            print(f"  ⚠️  Found option '{chosen}' for '{label}' but could not select it — please set it by hand.")
+            return False
+
+
+def ni_choose_radio(page, field_label: str, option_text: str) -> bool:
+    """Click a radio button (e.g. Cash / Card) by the label next to it, searched
+    near the field's heading so we click the correct group."""
+    sc = _ni_scope(page)
+    getters = [
+        # a radio whose very next element (label OR span OR text) is the wanted
+        # option, sitting after the field heading — clicking the radio ticks it
+        lambda: sc.locator(
+            f'xpath=//*[contains(normalize-space(.),"{field_label}")]/following::input[@type="radio"]'
+            f'[following-sibling::*[1][normalize-space(.)="{option_text}"]][1]'
+        ).first,
+        # a radio whose associated <label> is the wanted option, after the heading
+        lambda: sc.locator(
+            f'xpath=//*[contains(normalize-space(.),"{field_label}")]/following::input[@type="radio"]'
+            f'[following-sibling::label[1][normalize-space(.)="{option_text}"]][1]'
+        ).first,
+        # the option's own label/span after the heading (clicking a <label for> ticks it)
+        lambda: sc.locator(
+            f'xpath=//*[contains(normalize-space(.),"{field_label}")]/following::*[self::label or self::span]'
+            f'[normalize-space(.)="{option_text}"][1]'
+        ).first,
+        # any label with exactly that text, anywhere
+        lambda: sc.locator(
+            f'xpath=//label[normalize-space(.)="{option_text}"]'
+        ).first,
+    ]
+    for g in getters:
+        try:
+            el = g()
+            if el.count() == 0:
+                continue
+            el.scroll_into_view_if_needed(timeout=10000)
+            el.click()
+            print(f"  ✅  {field_label}: chose '{option_text}'")
+            ni_settle(page)
+            return True
+        except Exception:
+            continue
+    print(f"  ⚠️  Could not set {field_label} = {option_text} — please choose it by hand.")
+    return False
+
+
+def ni_click_tab(page, tab_text: str) -> bool:
+    """Click one of the form's tabs by its visible text, then wait for the reload.
+    The tabs live inside the form's iframe, so we look there (via _ni_scope)."""
+    sc = _ni_scope(page)
+    getters = [
+        lambda: sc.locator(f'a:has-text("{tab_text}")').first,
+        lambda: sc.locator(f'span:has-text("{tab_text}")').first,
+        lambda: sc.locator(f'td:has-text("{tab_text}")').first,
+        lambda: sc.locator(f'li:has-text("{tab_text}")').first,
+        lambda: sc.locator(f'div:has-text("{tab_text}")').first,
+        lambda: sc.locator(
+            f'xpath=//*[normalize-space(.)="{tab_text}" and (self::a or self::span or self::td or self::li or self::div)]'
+        ).first,
+    ]
+    for g in getters:
+        try:
+            el = g()
+            if el.count() > 0 and el.is_visible():
+                el.scroll_into_view_if_needed(timeout=10000)
+                el.click()
+                print(f"  ✅  Opened tab '{tab_text}'")
+                ni_settle(page)
+                return True
+        except Exception:
+            continue
+    print(f"  ⚠️  Could not find the '{tab_text}' tab — please click it by hand.")
+    return False
+
+
+def ni_set_checkbox(page, label: str, checked: bool) -> bool:
+    """Tick a checkbox found by the words next to it. Does NOTHING when checked is
+    False (we only ever tick add-ons on, never off). 'label' is matched loosely,
+    so 'UAE Exten' matches both 'UAE Extension' and the misspelled 'UAE Extention'.
+    """
+    if not checked:
+        return False
+    sc = _ni_scope(page)
+    getters = [
+        lambda: sc.get_by_label(label, exact=False).first,
+        lambda: sc.locator(
+            f'xpath=//label[contains(normalize-space(.),"{label}")]/preceding::input[@type="checkbox"][1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//*[contains(normalize-space(.),"{label}")]/preceding::input[@type="checkbox"][1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//label[contains(normalize-space(.),"{label}")]/following::input[@type="checkbox"][1]'
+        ).first,
+        lambda: sc.locator(
+            f'xpath=//*[contains(normalize-space(.),"{label}")]/following::input[@type="checkbox"][1]'
+        ).first,
+    ]
+    for g in getters:
+        try:
+            cb = g()
+            if cb.count() == 0:
+                continue
+            cb.scroll_into_view_if_needed(timeout=10000)
+            if not cb.is_checked():
+                try:
+                    cb.check()
+                except Exception:
+                    cb.click()
+            print(f"  ✅  Ticked '{label}'")
+            ni_settle(page)
+            return True
+        except Exception:
+            continue
+    print(f"  ⚠️  Could not tick '{label}' — please tick it by hand if needed.")
+    return False
+
+
+# ── New India small value helpers ─────────────────────────────────────────────
+
+def reformat_plate_for_ni(vehicle_number: str) -> str:
+    """New India wants the plate as CODE/NUMBER with no spaces, e.g.
+    'A A - 15030' → 'AA/15030'. Reuses split_plate so it matches the MIC logic."""
+    code, number = split_plate(vehicle_number)
+    return code.replace(" ", "") + "/" + number
+
+
+def compute_commencing_date_ni(prev_expiry_str: str) -> str:
+    """Same start-date rule as MIC, but in New India's dd/mm/yyyy format:
+      expired / unreadable → today;  today or future → expiry + 1 day."""
+    expiry = parse_tameen_date(prev_expiry_str)
+    today = date.today()
+    if expiry is None or expiry < today:
+        start = today
+    else:
+        start = expiry + timedelta(days=1)
+    return start.strftime("%d/%m/%Y")
+
+
+def ni_body_type_target(body_type: str, seats: str):
+    """Turn the Tameen Body Type (+ seat count) into the words that MUST appear in
+    New India's Body Type option. Returns a list of substrings, or None if we
+    can't decide (the caller then leaves Body Type unset and warns)."""
+    # New India's real option text (and quirks) seen in the dropdown:
+    #   FOUR WHEEL DRIVE (UPTO 15,000) / FOUR WHEEL DRIVE(15001-50000)
+    #   SALOON (UPTO 15,000)           / SALOON(15001-50000)
+    #   HATCH BACK (UPTO 15000)        / HATCH BACK (15001 - 50000)   ← "HATCH BACK", a space
+    #   PICKUP - UPTO 3 TONS           / PICKUP - 4WD
+    # The "(UPTO 15...)" vs "(15001-50000)" split is by VEHICLE VALUE. We don't get a
+    # value from Tameen, so we DEFAULT to the lower "UPTO 15" bracket and print which
+    # option was picked so it can be checked. ("UPTO 15" matches both "15000" and
+    # "15,000" spellings.)
+    b = (body_type or "").upper()
+    seat_n = None
+    digits = "".join(ch for ch in str(seats) if ch.isdigit())
+    if digits:
+        seat_n = int(digits)
+    if "SUV" in b or "4 WHEEL" in b or "FOUR WHEEL" in b:
+        return ["FOUR WHEEL DRIVE", "UPTO 15"]
+    if "SALOON" in b:
+        return ["SALOON", "UPTO 15"]
+    if "HATCHBACK" in b or "HATCH BACK" in b:
+        return ["HATCH BACK", "UPTO 15"]
+    if "PICKUP" in b and seat_n == 3:
+        return ["PICKUP", "3 TON"]
+    if "PICKUP" in b and seat_n == 5:
+        return ["PICKUP", "4WD"]
+    return None
+
+
+def read_tameen_addons(page) -> str:
+    """Read the Tameen 'Addons Details' SECTION (not a normal copyable field).
+
+    On the Tameen record this is a section heading 'Addons Details' followed by
+    EITHER the text 'No addons available' OR one/more 'Addon Name' entries such as
+    'UAE COVER'. Normal read_field() can't read it (there is no copy icon), so we
+    grab everything between the 'Addons Details' heading and the next section
+    heading, drop the 'Addon Name' labels, and return just the add-on name(s).
+    Returns '' when there are no add-ons.
+    """
+    try:
+        text = page.evaluate("""() => {
+            const all = [...document.querySelectorAll('*')];
+            const header = all.find(e => (e.innerText || '').trim() === 'Addons Details');
+            if (!header) return '';
+            const hy = header.getBoundingClientRect().top;
+            // Find the next section heading below, to bound the add-ons area.
+            const stops = ['Document Details', 'Additional Drivers', 'Vehicle Details'];
+            let nextY = Infinity;
+            for (const e of all) {
+                const t = (e.innerText || '').trim();
+                if (stops.includes(t)) {
+                    const y = e.getBoundingClientRect().top;
+                    if (y > hy && y < nextY) nextY = y;
+                }
+            }
+            // Collect leaf text sitting between the heading and the next section.
+            const out = [];
+            for (const e of all) {
+                if (e.children.length !== 0) continue;        // leaf elements only
+                const y = e.getBoundingClientRect().top;
+                if (y <= hy || y >= nextY) continue;
+                const t = (e.innerText || '').trim();
+                if (t) out.push(t);
+            }
+            return out.join(' | ');
+        }""")
+    except Exception:
+        text = ""
+    text = (text or "").strip()
+    if not text or "no addons" in text.lower():
+        print("  ℹ️  Tameen add-ons: none")
+        return ""
+    # Drop the literal 'Addon Name' labels so only the add-on value(s) remain.
+    cleaned = " ".join(part.strip() for part in text.split(" | ")
+                       if part.strip().lower() != "addon name")
+    print(f"  ✅  Tameen add-ons: {cleaned}")
+    return cleaned
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  NEW INDIA  —  FLOW HELPERS  (one per stage of the form)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def ni_login_if_needed(page) -> None:
+    """Log in to New India if the login page is showing; otherwise carry on.
+    No OTP on New India — just username + password."""
+    print("\n── New India: checking if login is needed ──")
+    page.wait_for_timeout(1500)
+
+    pwd = None
+    for sel in ['input[type="password"]', 'input[id*="pass" i]', 'input[name*="pass" i]']:
+        try:
+            cand = page.locator(sel).first
+            if cand.is_visible(timeout=8000):
+                pwd = cand
+                break
+        except Exception:
+            continue
+    if pwd is None:
+        print("  ✅  Already logged in (no login page detected)")
+        return
+    if not NI_USERNAME or not NI_PASSWORD:
+        print("  ⚠️  New India login page is showing but .env has no NI_USERNAME/NI_PASSWORD.")
+        print("      Please add them to .env, or log in by hand now.")
+        return
+
+    print(f"  🔑  Login page detected — signing in as '{NI_USERNAME}'...")
+    for sel in ['input[type="text"]', 'input[id*="user" i]', 'input[name*="user" i]', 'input:not([type])']:
+        try:
+            box = page.locator(sel).first
+            if box.is_visible(timeout=8000):
+                box.click(); box.fill(""); box.type(NI_USERNAME, delay=20)
+                break
+        except Exception:
+            continue
+    try:
+        pwd.click(); pwd.fill(""); pwd.type(NI_PASSWORD, delay=20)
+    except Exception:
+        print("  ⚠️  Could not type the password — please log in by hand.")
+        return
+
+    clicked = False
+    for sel in ['input[type="submit"]', 'button:has-text("Log In")', 'button:has-text("Login")',
+                'a:has-text("Log In")', 'input[value*="Log" i]']:
+        try:
+            b = page.locator(sel).first
+            if b.is_visible():
+                b.click(); clicked = True; break
+        except Exception:
+            continue
+    if not clicked:
+        try:
+            pwd.press("Enter")
+        except Exception:
+            pass
+    ni_settle(page)
+
+    still_login = False
+    try:
+        still_login = page.locator('input[type="password"]').first.is_visible(timeout=6000)
+    except Exception:
+        still_login = False
+    if still_login:
+        print("  ⚠️  Still on the login page — sign-in may have failed. Please check NI_USERNAME/NI_PASSWORD.")
+    else:
+        print("  ✅  Logged in to New India")
+
+
+def ni_go_to_motor_policy(page) -> None:
+    """Open the Motor Policy form: hover 'Transactions', then click 'Motor Policy'."""
+    print("\n── New India: opening Transactions → Motor Policy ──")
+    # Hover the Transactions menu so its sub-menu drops down.
+    for sel in ['a:has-text("Transactions")', 'span:has-text("Transactions")', ':text("Transactions")']:
+        try:
+            m = page.locator(sel).first
+            if m.is_visible():
+                m.hover()
+                break
+        except Exception:
+            continue
+    page.wait_for_timeout(600)
+    # Click the Motor Policy sub-menu item.
+    clicked = False
+    for sel in ['a:has-text("Motor Policy")', 'span:has-text("Motor Policy")', ':text("Motor Policy")']:
+        try:
+            mp = page.locator(sel).first
+            if mp.is_visible():
+                mp.click(); clicked = True; break
+        except Exception:
+            continue
+    if not clicked:
+        # JS fallback — click anything whose text is exactly 'Motor Policy'.
+        page.evaluate("""() => {
+            const t = [...document.querySelectorAll('a, span, li, div')]
+                .find(e => (e.innerText || '').trim() === 'Motor Policy');
+            if (t) t.click();
+        }""")
+    # Wait until the Motor Policy page has actually loaded.
+    try:
+        page.wait_for_url("**mtrPolicy.aspx**", timeout=60000)
+    except Exception:
+        pass
+    ni_settle(page)
+    print("  ✅  Motor Policy form open")
+
+
+def ni_report_scope(page) -> None:
+    """Print where the form was found (which tab + whether inside a frame) so any
+    problem is easy to see in the terminal and paste back for fixing."""
+    try:
+        pages = page.context.pages
+        print(f"  🔎  New India browser has {len(pages)} tab(s):")
+        for i, pg in enumerate(pages):
+            try:
+                print(f"       tab {i}: {pg.url}")
+            except Exception:
+                print(f"       tab {i}: (url unavailable)")
+    except Exception:
+        pass
+    sc = _ni_scope(page)
+    if sc is page:
+        print("  🔎  Could NOT locate the Motor Policy form in any tab/frame yet.")
+    else:
+        try:
+            has_reg = sc.locator('xpath=//*[contains(normalize-space(.),"Reg.No")]').count() > 0
+        except Exception:
+            has_reg = False
+        print(f"  🔎  Form located (inside a tab/frame). 'Reg.No' present there: {has_reg}")
+
+
+def ni_fill_primary_top(page, reg_no: str, license_id: str) -> None:
+    """Tab 1 (top): Reg.No, License/Civil ID, the five fixed radios, then click
+    'Show Information' and wait for the big data load to finish."""
+    print("\n── New India Tab 1 (top): vehicle lookup ──")
+    ni_report_scope(page)
+    ni_fill_by_label(page, "Reg.No", reg_no)
+    ni_fill_by_label(page, "License Number (or) Civil ID", license_id)
+
+    # Field labels are kept short to avoid apostrophe / exact-text issues
+    # (e.g. "Oman's First Registration" → match on "First Registration").
+    ni_choose_radio(page, "Payment Mode", NI_PAYMENT_MODE)
+    ni_choose_radio(page, "First Registration", NI_FIRST_REG)
+    ni_choose_radio(page, "Vehicle Type", NI_VEHICLE_TYPE)
+    ni_choose_radio(page, "Paybylink", NI_PAYBYLINK)
+    ni_choose_radio(page, "Import Vehicle", NI_IMPORT_VEHICLE)
+
+    # Click 'Show Information' — this is the BIG load that fills the rest of the form.
+    print("  ⏳  Clicking 'Show Information' and waiting for the vehicle data to load...")
+    sc = _ni_scope(page)
+    clicked = False
+    for sel in ['input[value*="Show Information" i]', 'button:has-text("Show Information")',
+                'a:has-text("Show Information")', ':text("Show Information")']:
+        try:
+            b = sc.locator(sel).first
+            if b.count() > 0 and b.is_visible():
+                b.scroll_into_view_if_needed(timeout=10000)
+                b.click(); clicked = True; break
+        except Exception:
+            continue
+    if not clicked:
+        print("  ⚠️  Could not find the 'Show Information' button — please click it by hand.")
+    ni_settle(page)
+    # Poll until Commencing Date exists AND has a value — that means the load
+    # finished. New India is slow, so give it plenty of time (~ up to 40 pauses).
+    for _ in range(40):
+        val = ni_read_by_label(page, "Commencing Date", quiet=True)
+        if val and val.strip():
+            break
+        page.wait_for_timeout(NI_STEP_PAUSE)
+    ni_settle(page)
+    print("  ✅  Vehicle information loaded")
+
+
+def ni_fill_primary_client(page, commencing_date: str, customer_name: str) -> None:
+    """Tab 1 (lower): Commencing Date, Customer, Customer Name, Telephone."""
+    print("\n── New India Tab 1 (lower): policy details ──")
+    # Overwrite the auto-filled commencing date; Escape closes the date-picker.
+    ni_fill_by_label(page, "Commencing Date", commencing_date, press_escape=True)
+    ni_select_exact(page, "Customer", NI_CUSTOMER)
+    ni_fill_by_label(page, "Customer Name", customer_name)
+    ni_fill_by_label(page, "Telephone No", NI_TELEPHONE)
+
+
+def ni_fill_previous_policy(page, mileage: str, color: str, full_name: str):
+    """Tab 2 (Previous Policy & Mulkiya): copy the shown Policy Expiry Date into
+    Mulkiya Expiry Date, set the fixed values, and READ Brand/Model/Year (which
+    New India fills in automatically) so Tab 3 can reuse them.
+    Returns (brand, model, year).
+    """
+    print("\n── New India Tab 2: Previous Policy & Mulkiya Details ──")
+    ni_click_tab(page, "Previous Policy")
+
+    # Mulkiya Expiry Date = whatever New India shows as 'Policy Expiry Date'.
+    policy_expiry = ni_read_by_label(page, "Policy Expiry Date")
+    if policy_expiry:
+        ni_fill_by_label(page, "Mulkiya Expiry Date", policy_expiry, press_escape=True)
+    else:
+        print("  ⚠️  Could not read New India's 'Policy Expiry Date' — set Mulkiya Expiry Date by hand.")
+
+    ni_fill_by_label(page, "Name of the Insured", full_name)
+
+    # READ (do NOT change) the vehicle identity New India already filled in.
+    brand = ni_read_by_label(page, "Brand")
+    model = ni_read_by_label(page, "Model")
+    year  = ni_read_by_label(page, "Year of Manufacturing")
+    print(f"  📋  New India already shows  Brand='{brand}'  Model='{model}'  Year='{year}'")
+
+    # These are all plain TEXT boxes on New India (they come pre-filled, e.g.
+    # AUTO / YES / NO / GOOD), so we type into them rather than picking a dropdown.
+    ni_fill_by_label(page, "Type of Transmission", NI_TRANSMISSION)
+    ni_fill_by_label(page, "Music System", NI_MUSIC_SYSTEM)
+    ni_fill_by_label(page, "Reading on Odometer", mileage)
+    ni_fill_by_label(page, "Colour of the Vehicle", color)
+    ni_fill_by_label(page, "External Damages", NI_EXTERNAL_DAMAGES)   # this one is a <textarea>
+    ni_fill_by_label(page, "Tyre Condition", NI_TYRE_CONDITION)
+    return brand, model, year
+
+
+def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats: str) -> None:
+    """Tab 3 (Vehicle Details): Make (from Brand), Model (from Model, waits for the
+    list to reload after Make), and Body Type (from the Tameen body type + seats)."""
+    print("\n── New India Tab 3: Vehicle Details ──")
+    ni_click_tab(page, "Vehicle Details")
+
+    if brand:
+        ni_select_contains(page, "Make", [brand])
+        # Selecting Make reloads the Model list — wait until it has real options
+        # (more than just the placeholder 'Select') before choosing the Model.
+        for _ in range(30):
+            try:
+                model_sel = _ni_find_select(page, "Model")
+                if model_sel is not None:
+                    opts = [o for o in model_sel.locator("option").all_inner_texts()
+                            if o.strip() and o.strip().lower() != "select"]
+                    if opts:
+                        break
+            except Exception:
+                pass
+            page.wait_for_timeout(NI_STEP_PAUSE)
+    else:
+        print("  ⚠️  No Brand was read from New India — Make/Model left for you to pick.")
+
+    if model:
+        ni_select_contains(page, "Model", [model])
+
+    targets = ni_body_type_target(body_type, seats)
+    if targets is None:
+        print(f"  ⚠️  Body Type '{body_type}' (seats={seats}) is not in the mapping — "
+              "please pick the Body Type by hand.")
+    else:
+        ni_select_contains(page, "Body Type", targets)
+        if "UPTO 15" in targets:
+            print("  ℹ️  Body Type value bracket defaulted to 'UPTO 15,000'. If this "
+                  "vehicle's value is higher, switch to the '15001-50000' option by hand.")
+
+
+def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> None:
+    """Steps 34–37 (Premium Calculation section): Coverage Type, Seating capacity,
+    and the two optional add-on checkboxes (UAE Extension, Roadside Assistance).
+    STOPS here — does NOT press Premium Calculator / Save / Print / anything."""
+    print("\n── New India: Premium Calculation (final fields) ──")
+
+    # This section sits at the BOTTOM of the Vehicle Details tab (Seating Capacity,
+    # U.A.E. Extension, Road Assistance / ERA / IMC, etc.). It is already visible —
+    # we do NOT click the 'Premium Calculator' button (that is a submit/action
+    # button and must never be pressed here). Coverage Type may not exist on every
+    # layout, so if we can't find it we just warn and move on.
+
+    # Coverage Type — only the Third Party branch is defined for now. We match on a
+    # few distinctive words because the real option uses '&' ("Third Party with PA
+    # Cover to Driver & Family"), so matching the whole phrase with 'and' would miss.
+    if policy_type == "Third Party":
+        ni_select_contains(page, "Coverage Type", ["Third Party", "PA Cover", "Driver"])
+    elif policy_type == "Comprehensive":
+        print("  ⚠️  Comprehensive Coverage Type is not defined yet — please pick it by hand.")
+    else:
+        print(f"  ⚠️  Unknown policy type '{policy_type}' — please pick Coverage Type by hand.")
+
+    # Seating Capacity — ni_fill_by_label already clears the box first, then types.
+    if seats:
+        ni_fill_by_label(page, "Seating Capacity", seats)
+    else:
+        print("  ⚠️  No seats value to put in Seating Capacity — please set it by hand.")
+
+    # Add-on checkboxes — only tick what the Tameen add-ons text actually mentions.
+    # New India labels them "U.A.E. Extension" and "Road Assistance / ERA / IMC".
+    addons_l = (addons or "").lower()
+    if not addons:
+        print("  ⚠️  No add-ons were read from Tameen — leaving U.A.E. Extension and "
+              "Road Assistance UNticked. Please tick them by hand if needed.")
+        return
+    ni_set_checkbox(page, "U.A.E. Exten", "uae" in addons_l)   # matches 'Extension' / 'Extention'
+    ni_set_checkbox(page, "Road Assistance",
+                    ("roadside" in addons_l or "road side" in addons_l))
+
+
+def ni_reset_to_motor_policy(page) -> None:
+    """Send New India back to a fresh Motor Policy form for the next record."""
+    print("\n── New India reset: opening a fresh Motor Policy form ──")
+    try:
+        ni_login_if_needed(page)
+        ni_go_to_motor_policy(page)
+    except Exception as e:
+        print(f"  ⚠️  Could not reset New India ({e}) — please open Motor Policy by hand.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  MAIN FLOW
 # ══════════════════════════════════════════════════════════════════════════════
 with sync_playwright() as p:
@@ -1539,6 +2392,12 @@ with sync_playwright() as p:
     # error instead of hanging forever.
     mic_page.set_default_timeout(120000)
 
+    print("Opening New India website...")
+    ni_page = context.new_page()
+    # Same 2-minute safety net. New India is a slow ASP.NET site, so the per-action
+    # waits (ni_settle) plus this timeout keep it from racing ahead or hanging.
+    ni_page.set_default_timeout(120000)
+
     # ── Native-dialog safety net ──────────────────────────────────────────────
     # Auto-accept (click OK on) any genuine NATIVE browser dialog — e.g. a
     # beforeunload "Leave site?" prompt that can fire when we navigate or reset a
@@ -1549,8 +2408,10 @@ with sync_playwright() as p:
     # See errorlog.md.txt (entry 1) for why the two dialog types are handled apart.
     mic_page.on("dialog", lambda dialog: dialog.accept())
     tameen_page.on("dialog", lambda dialog: dialog.accept())
+    ni_page.on("dialog", lambda dialog: dialog.accept())
 
     mic_page.goto(MIC_HOME_URL, timeout=60000)
+    ni_page.goto(NI_LOGIN_URL, timeout=60000)
 
     try:
         # ── TAMEEN: manual OTP login (ONE TIME for the whole run) ─────────────
@@ -1574,7 +2435,8 @@ with sync_playwright() as p:
         # ══════════════════════════════════════════════════════════════════════
         while True:
             record_text = None     # the chosen Tameen row's text (for the summaries)
-            prepared    = None     # the values prepared for MIC (filled in below)
+            prepared    = None     # the values prepared for the insurer (filled in below)
+            company     = None     # "MIC" or "NEW_INDIA" — which flow to run
 
             try:
                 # Bring Tameen to the front EACH record: read_field reads via the
@@ -1589,21 +2451,25 @@ with sync_playwright() as p:
                 while True:
                     tameen_click_payments_by_channel(tameen_page)  # step 2
                     tameen_select_channel(tameen_page)             # step 3
-                    status, record_text = tameen_select_and_click_eye(tameen_page)  # step 4
+                    status, record_text, company = tameen_select_and_click_eye(tameen_page)  # step 4
                     if status != "BACK":
                         break
 
-                # ── TAMEEN: read all needed fields ────────────────────────────
+                if company not in ("MIC", "NEW_INDIA"):
+                    raise RuntimeError(
+                        "This record's insurance company is not one we can process "
+                        "automatically (only Muscat Insurance and New India are supported)."
+                    )
+                print(f"\n  → This record is a {'Muscat Insurance' if company == 'MIC' else 'New India'} policy.")
+
+                # ── TAMEEN: read the fields BOTH insurers need ────────────────
                 print("\nReading data from Tameen record...")
                 first_name   = read_field(tameen_page, "First Name")
                 last_name    = read_field(tameen_page, "Last Name")
                 license_id   = read_field(tameen_page, "License ID")
                 product_name = read_field(tameen_page, "Product Name")
                 prev_expiry  = read_field(tameen_page, "Previous Expiry")
-                # ⚠️ CONFIRM these three Tameen labels — I guessed them:
                 vehicle_no   = read_field(tameen_page, "Vehicle Number")   # e.g. "B S-4788"
-                sum_insured  = read_field(tameen_page, "Sum Insured")
-                tameen_total = read_field(tameen_page, "Total Premium")
 
                 # Seats — read live from the Tameen View Details page. The label may be
                 # written a few different ways, so try the most likely ones in order.
@@ -1616,51 +2482,126 @@ with sync_playwright() as p:
                 # Keep only the digits (so 'Seats: 7' or '7 seats' both become '7').
                 seats = "".join(ch for ch in seats_raw if ch.isdigit())
 
-                # ── Derive the values MIC needs ───────────────────────────────
-                full_name    = (first_name + " " + last_name).strip()
-                period_from  = compute_period_from(parse_tameen_date(prev_expiry))
-                plate_code, plate_number = split_plate(vehicle_no)
+                full_name = (first_name + " " + last_name).strip()
 
-                # Keep every prepared value together so BOTH the success summary
-                # and the flagged-error summary can show the same details.
-                prepared = {
-                    "Product Name"  : product_name,
-                    "Insured Name"  : full_name,
-                    "License No"    : license_id,
-                    "Period From"   : f"{period_from}   (from expiry '{prev_expiry}')",
-                    "Plate"         : f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
-                    "Seats"         : seats or "(not read — check the Tameen label)",
-                    "Sum Insured"   : sum_insured,
-                    "Tameen Premium": tameen_total,
-                }
+                # ══════════════════════════════════════════════════════════════
+                #  ROUTE TO THE RIGHT INSURER
+                # ══════════════════════════════════════════════════════════════
+                if company == "MIC":
+                    # ── extra fields only MIC needs ──
+                    sum_insured  = read_field(tameen_page, "Sum Insured")
+                    tameen_total = read_field(tameen_page, "Total Premium")
+                    period_from  = compute_period_from(parse_tameen_date(prev_expiry))
+                    plate_code, plate_number = split_plate(vehicle_no)
 
-                print("\n" + "=" * 60)
-                print("📋  VALUES PREPARED FOR MIC")
-                print("=" * 60)
-                for label, value in prepared.items():
-                    print(f"  {label:<14}: {value}")
-                print("=" * 60)
+                    prepared = {
+                        "Product Name"  : product_name,
+                        "Insured Name"  : full_name,
+                        "License No"    : license_id,
+                        "Period From"   : f"{period_from}   (from expiry '{prev_expiry}')",
+                        "Plate"         : f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
+                        "Seats"         : seats or "(not read — check the Tameen label)",
+                        "Sum Insured"   : sum_insured,
+                        "Tameen Premium": tameen_total,
+                    }
+                    print("\n" + "=" * 60)
+                    print("📋  VALUES PREPARED FOR MIC")
+                    print("=" * 60)
+                    for label, value in prepared.items():
+                        print(f"  {label:<14}: {value}")
+                    print("=" * 60)
 
-                # ── MIC: fill in the policy (left as Draft — not approved) ────
-                mic_page.bring_to_front()
-                mic_login_if_needed(mic_page)                                   # step 0
-                mic_open_policy_create(mic_page)                                # steps 1–2
-                is_comprehensive = mic_choose_policy_type_and_create(mic_page, product_name)  # steps 3–4
-                mic_get_licence(mic_page, license_id)                          # steps 5–6
-                mic_fill_policy_info(mic_page, full_name, period_from)         # steps 7–12
-                mic_get_vehicle(mic_page, plate_number, plate_code)           # steps 13–15
-                mic_fill_vehicle_info(mic_page, is_comprehensive, sum_insured, seats)  # steps 16–19
-                mic_calculate_and_check(mic_page, tameen_total)               # steps 20–22
-                # Status is intentionally left as Draft — no auto-approve.
+                    # ── MIC: fill in the policy (left as Draft — not approved) ──
+                    mic_page.bring_to_front()
+                    mic_login_if_needed(mic_page)                                   # step 0
+                    mic_open_policy_create(mic_page)                                # steps 1–2
+                    is_comprehensive = mic_choose_policy_type_and_create(mic_page, product_name)  # steps 3–4
+                    mic_get_licence(mic_page, license_id)                          # steps 5–6
+                    mic_fill_policy_info(mic_page, full_name, period_from)         # steps 7–12
+                    mic_get_vehicle(mic_page, plate_number, plate_code)           # steps 13–15
+                    mic_fill_vehicle_info(mic_page, is_comprehensive, sum_insured, seats)  # steps 16–19
+                    mic_calculate_and_check(mic_page, tameen_total)               # steps 20–22
+                    # Status is intentionally left as Draft — no auto-approve.
 
-                print("\n" + "=" * 60)
-                print("✅  MIC FLOW FINISHED — review the form on screen.")
-                if record_text:
-                    print(f"   Record: {record_text}")
-                print("=" * 60)
+                    print("\n" + "=" * 60)
+                    print("✅  MIC FLOW FINISHED — review the form on screen.")
+                    if record_text:
+                        print(f"   Record: {record_text}")
+                    print("=" * 60)
+
+                else:  # company == "NEW_INDIA"
+                    # ── extra fields only New India needs ──
+                    # ⚠️ CONFIRM these Tameen labels — the last three are guesses; we
+                    #    try several spellings and keep the first that returns a value.
+                    mileage = ""
+                    for lbl in ("Mileage Est", "Mileage", "Mileage Estimate", "Odometer"):
+                        mileage = read_field(tameen_page, lbl)
+                        if mileage:
+                            break
+                    color = ""
+                    for lbl in ("Color", "Colour", "Vehicle Color", "Vehicle Colour"):
+                        color = read_field(tameen_page, lbl)
+                        if color:
+                            break
+                    body_type = ""
+                    for lbl in ("Body Type", "Body", "Vehicle Body Type", "Body Style"):
+                        body_type = read_field(tameen_page, lbl)
+                        if body_type:
+                            break
+                    addons = read_tameen_addons(tameen_page)
+
+                    # Policy type drives the Coverage Type dropdown later.
+                    pn = (product_name or "").lower()
+                    if "third party" in pn:
+                        policy_type = "Third Party"
+                    elif "comprehensive" in pn:
+                        policy_type = "Comprehensive"
+                    else:
+                        policy_type = None
+                        print(f"  ⚠️  Could not tell policy type from product '{product_name}' — "
+                              "Coverage Type will be left for you to pick.")
+
+                    reg_no          = reformat_plate_for_ni(vehicle_no)
+                    commencing_date = compute_commencing_date_ni(prev_expiry)
+
+                    prepared = {
+                        "Product/Type"  : f"{product_name}  →  {policy_type or '(unknown)'}",
+                        "Insured Name"  : full_name,
+                        "License/CivilID": license_id,
+                        "Reg.No"        : f"{reg_no}   (from '{vehicle_no}')",
+                        "Commencing"    : f"{commencing_date}   (from expiry '{prev_expiry}')",
+                        "Seats"         : seats or "(not read — check the Tameen label)",
+                        "Mileage"       : mileage or "(not read)",
+                        "Colour"        : color or "(not read)",
+                        "Body Type"     : body_type or "(not read)",
+                        "Add-ons"       : addons or "(none read)",
+                    }
+                    print("\n" + "=" * 60)
+                    print("📋  VALUES PREPARED FOR NEW INDIA")
+                    print("=" * 60)
+                    for label, value in prepared.items():
+                        print(f"  {label:<16}: {value}")
+                    print("=" * 60)
+
+                    # ── NEW INDIA: fill the form (stops at review — no submit) ──
+                    ni_page.bring_to_front()
+                    ni_login_if_needed(ni_page)
+                    ni_go_to_motor_policy(ni_page)
+                    ni_fill_primary_top(ni_page, reg_no, license_id)
+                    ni_fill_primary_client(ni_page, commencing_date, full_name)
+                    brand, model, year = ni_fill_previous_policy(ni_page, mileage, color, full_name)
+                    ni_fill_vehicle_details(ni_page, brand, model, body_type, seats)
+                    ni_fill_premium_calculation(ni_page, policy_type, seats, addons)
+                    # Intentionally STOPS here — nothing is saved/submitted.
+
+                    print("\n" + "=" * 60)
+                    print("✅  NEW INDIA FORM FILLED — review on screen.")
+                    if record_text:
+                        print(f"   Record: {record_text}")
+                    print("=" * 60)
 
                 # RESET ON DEMAND: nothing is touched until the employee says so.
-                ans = input("\nReview the result. Press ENTER to reset both tabs and "
+                ans = input("\nReview the result. Press ENTER to reset the tabs and "
                             "process another record, or type 'q' then ENTER to finish ▶  ")
                 if ans.strip().lower() == "q":
                     break
@@ -1688,14 +2629,19 @@ with sync_playwright() as p:
                 print("    for any missing/extra information to sort this quote out.")
                 print("=" * 60)
 
-                ans = input("\nWhen you are done, press ENTER to reset both tabs and "
+                ans = input("\nWhen you are done, press ENTER to reset the tabs and "
                             "continue to the next record, or type 'q' then ENTER to finish ▶  ")
                 if ans.strip().lower() == "q":
                     break
 
             # Reached only when CONTINUING (after a success OR a flagged error):
-            # send both tabs back to their starting points for the next record.
-            mic_reset_to_home(mic_page)
+            # send the tabs back to their starting points for the next record.
+            # Only the insurer tab we actually used is reset (the other one is left
+            # alone). If we failed before knowing the insurer, reset MIC by default.
+            if company == "NEW_INDIA":
+                ni_reset_to_motor_policy(ni_page)
+            else:
+                mic_reset_to_home(mic_page)
             tameen_reset_to_payments(tameen_page)
 
     except Exception as e:
