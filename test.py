@@ -4,6 +4,7 @@ import os
 from common import (
     MIC_HOME_URL,
     read_field, parse_tameen_date, compute_period_from, split_plate,
+    expiry_far_off,
     tameen_go_to_payments, tameen_click_payments_by_channel,
     tameen_select_channel, tameen_reset_to_payments,
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
@@ -1218,6 +1219,12 @@ with sync_playwright() as p:
                         type_source = pt
                         print(f"  → Mobileapp: using Policy Type '{pt}' (Product Name is blank)")
 
+                # Flag a previous-policy expiry that's more than a month away
+                # (renewing too early) — shown in the prepared summary below.
+                expiry_flagged = expiry_far_off(parse_tameen_date(prev_expiry))
+                if expiry_flagged:
+                    print(f"\n⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
+
                 # ══════════════════════════════════════════════════════════════
                 #  ROUTE TO THE RIGHT INSURER
                 # ══════════════════════════════════════════════════════════════
@@ -1233,6 +1240,7 @@ with sync_playwright() as p:
                         "Insured Name"  : full_name,
                         "License No"    : license_id,
                         "Period From"   : f"{period_from}   (from expiry '{prev_expiry}')",
+                        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
                         "Plate"         : f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
                         "Seats"         : seats or "(not read — check the Tameen label)",
                         "Sum Insured"   : sum_insured,
@@ -1304,6 +1312,7 @@ with sync_playwright() as p:
                         "License/CivilID": license_id,
                         "Reg.No"        : f"{reg_no}   (from '{vehicle_no}')",
                         "Commencing"    : f"{commencing_date}   (from expiry '{prev_expiry}')",
+                        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
                         "Seats"         : seats or "(not read — check the Tameen label)",
                         "Mileage"       : mileage or "(not read)",
                         "Colour"        : color or "(not read)",

@@ -9,6 +9,7 @@ Credentials live in .env (never committed) — see main.py's header for the form
 """
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
+import calendar
 import os
 import re
 
@@ -135,6 +136,19 @@ def compute_period_from(expiry) -> str:
     else:
         start = expiry + timedelta(days=1)
     return start.strftime("%d-%b-%Y").upper()
+
+
+def expiry_far_off(expiry, months: int = 1) -> bool:
+    """True if the policy expiry is more than `months` calendar month(s) after today.
+    Flags records whose previous policy hasn't lapsed yet (renewing too early)."""
+    if expiry is None:
+        return False
+    today = date.today()
+    m = today.month - 1 + months
+    y = today.year + m // 12
+    m = m % 12
+    cutoff = date(y, m + 1, min(today.day, calendar.monthrange(y, m + 1)[1]))
+    return expiry > cutoff
 
 
 def split_plate(vehicle_number: str):

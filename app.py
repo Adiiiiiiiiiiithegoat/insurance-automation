@@ -35,6 +35,7 @@ from playwright.sync_api import sync_playwright
 from common import (
     MIC_HOME_URL, PREMIUM_TOLERANCE,
     read_field, read_premium, parse_tameen_date, compute_period_from, split_plate,
+    expiry_far_off,
     tameen_go_to_payments, tameen_click_payments_by_channel,
     tameen_reset_to_payments,
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
@@ -340,8 +341,12 @@ def _read_tameen_fields(page, channel_name):
     seats = "".join(ch for ch in seats_raw if ch.isdigit())
 
     full_name   = (first_name + " " + last_name).strip()
-    period_from = compute_period_from(parse_tameen_date(prev_expiry))
+    parsed_expiry = parse_tameen_date(prev_expiry)
+    period_from = compute_period_from(parsed_expiry)
+    expiry_flagged = expiry_far_off(parsed_expiry)
     plate_code, plate_number = split_plate(vehicle_no)
+    if expiry_flagged:
+        print(f"⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
 
     # Mobileapp channel leaves Product Name blank and uses a Policy Type field.
     type_source = product_name
@@ -359,6 +364,7 @@ def _read_tameen_fields(page, channel_name):
         "Insured Name": full_name,
         "License No": license_id,
         "Period From": f"{period_from}   (from expiry '{prev_expiry}')",
+        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
         "Plate": f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
         "Seats": seats or "(not read — check the Tameen label)",
         "Sum Insured": sum_insured,
