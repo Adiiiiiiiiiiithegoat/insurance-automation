@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Muscat Insurance records{% if channel_name %} — {{ channel_name }}{% endif %}</h1>
+  <p class="muted">Click <strong>Open</strong> on a record to read it and prepare the MIC form.</p>
+
+  <form method="post" action="{{ url_for('back_to_channels') }}">
+    <button class="btn btn-ghost" type="submit">← Back to channels</button>
+  </form>
+
+  {% if table.rows %}
+  <div class="table-wrap">
+    <table class="records">
+      <thead>
+        <tr>
+          <th>Open</th>
+          {% for h in table.headers %}<th>{{ h|title }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in table.rows %}
+        <tr>
+          <td>
+            <form method="post" action="{{ url_for('confirm_row', idx=r.index) }}">
+              <button class="btn-open" type="submit">Open ▶</button>
+            </form>
+          </td>
+          {% for h in table.headers %}
+            <td>{{ r.cells[loop.index0] if loop.index0 < r.cells|length else '' }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="banner info">No records found in this channel.</div>
+  {% endif %}
+</div>
+{% endblock %}

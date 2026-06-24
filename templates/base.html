@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Muscat Insurance — Automation{% endblock %}</title>
+  <style>
+    /* Palette from ui_assets/BRAND.md */
+    :root{
+      --red:#E5174B; --navy:#1B2A4E; --black:#0B0B0C; --lavender:#E9EDF7;
+      --white:#FFFFFF; --grey:#6B7280; --green:#1D9E75; --warn:#D64545;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+         background:var(--lavender);color:var(--navy)}
+    /* White header so the dark Tameen logo + title are readable. */
+    header{background:var(--white);display:flex;align-items:center;gap:14px;
+           padding:12px 24px;border-bottom:1px solid #e3e8f2;
+           box-shadow:0 2px 6px rgba(27,42,78,.06)}
+    header img{height:40px}
+    header .title{color:var(--navy);font-size:18px;font-weight:600;letter-spacing:.3px}
+    main{max-width:860px;margin:36px auto;padding:0 20px}
+    main.wide{max-width:1240px}
+    .card{background:var(--white);border-radius:16px;padding:28px 30px;
+          box-shadow:0 6px 24px rgba(27,42,78,.08);margin-bottom:22px}
+    h1{font-size:26px;margin:0 0 14px}
+    h2{font-size:20px;margin:0 0 10px}
+    p{line-height:1.55;color:var(--navy)}
+    .muted{color:var(--grey)}
+    .btn{display:inline-block;border:none;border-radius:12px;padding:16px 26px;
+         font-size:17px;font-weight:600;cursor:pointer;text-decoration:none}
+    .btn-primary{background:var(--red);color:#fff}
+    .btn-primary:hover{filter:brightness(1.07)}
+    .btn-ghost{background:transparent;color:var(--navy);border:2px solid #d3dae8}
+    .btn-ghost:hover{border-color:var(--navy)}
+    .btn-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:18px}
+    /* clickable list/grid */
+    .pick{width:100%;text-align:left;background:var(--white);border:2px solid #e3e8f2;
+          border-radius:14px;padding:18px 22px;margin:10px 0;cursor:pointer;
+          font-size:17px;color:var(--navy);transition:.12s;display:flex;
+          justify-content:space-between;align-items:center;gap:16px}
+    .pick:hover{border-color:var(--red);box-shadow:0 4px 14px rgba(229,23,75,.12)}
+    .pick .count{background:var(--lavender);color:var(--navy);border-radius:999px;
+                 padding:4px 14px;font-weight:600;font-size:15px;white-space:nowrap}
+    .pick.disabled{opacity:.5;cursor:not-allowed}
+    .section-label{margin:22px 0 6px;font-size:13px;font-weight:700;letter-spacing:.6px;
+                   text-transform:uppercase;color:var(--grey)}
+    .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 18px;margin:14px 0}
+    .kv .k{color:var(--grey);font-weight:600}
+    .kv .v{color:var(--navy);font-family:'Consolas',monospace}
+    .banner{border-radius:14px;padding:20px 24px;margin:6px 0 18px;font-size:18px}
+    .banner.green{background:#e6f6ef;border:2px solid var(--green);color:#0f6b4c}
+    .banner.red{background:#fbe9e9;border:2px solid var(--warn);color:#9c2a2a}
+    .banner.info{background:#eef2fb;border:2px solid #c9d4ec;color:var(--navy)}
+    /* checklist */
+    ul.steps{list-style:none;padding:0;margin:18px 0}
+    ul.steps li{display:flex;align-items:center;gap:14px;padding:12px 4px;
+                font-size:17px;color:var(--grey);border-bottom:1px solid #eef1f8}
+    ul.steps li .dot{width:22px;height:22px;border-radius:50%;border:2px solid #cfd6e6;
+                     flex:none;display:flex;align-items:center;justify-content:center;
+                     font-size:13px;color:#fff}
+    ul.steps li.active{color:var(--navy);font-weight:600}
+    ul.steps li.active .dot{border-color:var(--red);animation:spin 1s linear infinite;
+                            border-top-color:var(--red);border-right-color:transparent}
+    ul.steps li.done{color:var(--navy)}
+    ul.steps li.done .dot{background:var(--green);border-color:var(--green)}
+    ul.steps li.done .dot::after{content:"\2713"}
+    ul.steps li.failed{color:var(--warn);font-weight:600}
+    ul.steps li.failed .dot{background:var(--warn);border-color:var(--warn)}
+    ul.steps li.failed .dot::after{content:"\00d7"}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    /* Translucent "working" overlay with a red spinner, shown during any
+       navigation/submit so the employee can tell it's loading, not frozen. */
+    #overlay{position:fixed;inset:0;z-index:1000;display:none;
+      flex-direction:column;align-items:center;justify-content:center;gap:18px;
+      background:rgba(233,237,247,.66);backdrop-filter:blur(2px)}
+    #overlay.show{display:flex}
+    #overlay .spinner{width:64px;height:64px;border-radius:50%;
+      border:6px solid rgba(229,23,75,.25);border-top-color:var(--red);
+      animation:spin .8s linear infinite}
+    #overlay .msg{color:var(--navy);font-weight:600;font-size:17px}
+    /* Real records table, styled after the Tameen dashboard. */
+    .table-wrap{overflow-x:auto;border:1px solid #e3e8f2;border-radius:12px;margin-top:14px}
+    table.records{border-collapse:collapse;width:100%;background:#fff;font-size:14px}
+    table.records th{position:sticky;top:0;background:var(--navy);color:#fff;text-align:left;
+      padding:11px 14px;font-weight:600;font-size:12.5px;letter-spacing:.4px;
+      text-transform:uppercase;white-space:nowrap}
+    table.records td{padding:10px 14px;border-bottom:1px solid #eef1f8;
+      color:var(--navy);white-space:nowrap}
+    table.records tbody tr:nth-child(even){background:#f7f8fc}
+    table.records tbody tr:hover{background:#fdeef2}
+    table.records .btn-open{background:var(--red);color:#fff;border:none;border-radius:8px;
+      padding:7px 16px;font-weight:600;font-size:13px;cursor:pointer}
+    table.records .btn-open:hover{filter:brightness(1.07)}
+    code{background:#f3f5fa;padding:2px 6px;border-radius:6px}
+    pre{white-space:pre-wrap;background:#f7f8fc;padding:14px;border-radius:10px;color:#9c2a2a}
+  </style>
+</head>
+<body>
+  <header>
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="logo"
+         onerror="this.style.display='none'">
+    <span class="title">Muscat Insurance — Policy Automation</span>
+  </header>
+  <main class="{% block main_class %}{% endblock %}">
+    {% block content %}{% endblock %}
+  </main>
+
+  <div id="overlay">
+    <div class="spinner"></div>
+    <div class="msg">Working… please wait</div>
+  </div>
+  <script>
+    (function(){
+      var overlay = document.getElementById('overlay');
+      function show(){ overlay.classList.add('show'); }
+      // Any form submit (Yes, channel/record pick, reset, login) does slow browser
+      // work on the server — show the spinner immediately.
+      document.addEventListener('submit', show, true);
+      // Navigating links (Back, "No — pick another") too — but not new-tab or JS links.
+      document.addEventListener('click', function(e){
+        var a = e.target.closest('a');
+        if (a && a.href && !a.target && a.getAttribute('href').indexOf('javascript:') !== 0) show();
+      }, true);
+      // Hide if the page is restored from the back/forward cache.
+      window.addEventListener('pageshow', function(){ overlay.classList.remove('show'); });
+    })();
+  </script>
+</body>
+</html>

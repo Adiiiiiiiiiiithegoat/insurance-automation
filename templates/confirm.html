@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>Do you want to start with this one?</h1>
+  {% if channel_name %}<p class="muted">Channel: {{ channel_name }}</p>{% endif %}
+  <p>This is the record you picked. Click <strong>Yes</strong> and the automation
+     will read its full details from Tameen and fill the entire MIC form on its own
+     — no clicks needed — then ask you to check it.</p>
+
+  <div class="kv">
+    {% for h, v in pairs %}
+      <div class="k">{{ h|title }}</div><div class="v">{{ v }}</div>
+    {% endfor %}
+  </div>
+
+  <div class="btn-row">
+    <form method="post" action="{{ url_for('start_processing', idx=idx) }}">
+      <button class="btn btn-primary" type="submit">Yes — start with this one ▶</button>
+    </form>
+    <a class="btn btn-ghost" href="{{ url_for('records') }}">No — pick another record</a>
+  </div>
+</div>
+{% endblock %}

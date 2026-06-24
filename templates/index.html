@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>Step 1 — Log in to Tameen</h1>
+  <div class="banner info">
+    A separate browser window has opened. Switch to it, log in to Tameen and
+    finish the OTP, then come back here and click the button below.
+  </div>
+  <p class="muted">
+    Take as long as you need — nothing is rushed. The control panel (this window)
+    and the automation run in two separate windows on purpose, so you can watch.
+  </p>
+  <form method="post" action="{{ url_for('login_done') }}">
+    <div class="btn-row">
+      <button class="btn btn-primary" type="submit">I've logged in — continue ▶</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>Choose a channel</h1>
+  <p class="muted">Pick which channel's payments you want to work through.
+     Channels with 0 records cannot be opened.</p>
+
+  {% set ns = namespace(section=None) %}
+  {% for c in channels %}
+    {% if c.section != ns.section %}
+      {% set ns.section = c.section %}
+      <div class="section-label">{{ (c.section or 'Other')|title }}</div>
+    {% endif %}
+    {% if c.count == 0 %}
+      <div class="pick disabled">
+        <span>{{ c.name }}</span><span class="count">0 records</span>
+      </div>
+    {% else %}
+      <form method="post" action="{{ url_for('select_channel', idx=c.index) }}">
+        <button class="pick" type="submit">
+          <span>{{ c.name }}</span>
+          <span class="count">{{ c.count if c.count is not none else '?' }} records</span>
+        </button>
+      </form>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endblock %}

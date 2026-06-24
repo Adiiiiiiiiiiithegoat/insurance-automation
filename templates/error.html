@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>Something went wrong</h1>
+  <div class="banner red">This step couldn't be completed.</div>
+  <pre>{{ message }}</pre>
+  <div class="btn-row">
+    {% if allow_retry %}
+      <a class="btn btn-ghost" href="javascript:history.back()">← Try again</a>
+    {% endif %}
+    <a class="btn btn-primary" href="{{ url_for('index') }}">Start over</a>
+  </div>
+</div>
+{% endblock %}

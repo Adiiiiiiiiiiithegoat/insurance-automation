@@ -1,0 +1,1 @@
+Drop the company logo image in this folder (PNG with a transparent background preferred). Name it logo.png if possible.

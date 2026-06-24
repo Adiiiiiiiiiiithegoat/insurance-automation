@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" id="progress-card">
+  <h1>Filling the MIC form…</h1>
+  {% if record_text %}<p class="muted">Record: {{ record_text }}</p>{% endif %}
+  <div class="banner info">You can switch to the other browser window to watch the
+    form being filled in real time.</div>
+
+  <ul class="steps" id="steps">
+    {% for s in steps %}
+      <li class="pending" id="step-{{ loop.index0 }}"><span class="dot"></span>{{ s }}</li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="card" id="result-card" style="display:none">
+  <div id="result-banner"></div>
+  <p>Go and check the MIC form in the other window. When you're happy, click below
+     to reset both tabs and do the next one. <strong>Nothing closes automatically.</strong></p>
+  <form method="post" action="{{ url_for('reset') }}">
+    <button class="btn btn-primary" type="submit">Reset &amp; process next ▶</button>
+  </form>
+</div>
+
+<script>
+  const steps = document.querySelectorAll('#steps li');
+  function set(i, cls){
+    const el = steps[i]; if(!el) return;
+    el.classList.remove('pending','active','done','failed');
+    el.classList.add(cls);
+  }
+  function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+  function showResult(html){
+    document.getElementById('result-banner').innerHTML = html;
+    document.getElementById('result-card').style.display = 'block';
+    document.getElementById('result-card').scrollIntoView({behavior:'smooth'});
+  }
+
+  const src = new EventSource("{{ url_for('progress_stream') }}");
+  src.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.type === 'step') {
+      set(d.index, d.state === 'start' ? 'active' : 'done');
+    } else if (d.type === 'error') {
+      if (d.index != null) set(d.index, 'failed');
+      const rec = d.record ? '<p class="muted">Record: ' + esc(d.record) + '</p>' : '';
+      showResult('<div class="banner red"><strong>❌ This quote hit a problem — flagged for review.</strong></div>'
+        + rec + '<pre>' + esc(d.message) + '</pre>'
+        + '<p>Investigate in the browser, sort out any missing info, then reset for the next one. The policy was left as a draft.</p>');
+      src.close();
+    } else if (d.type === 'final') {
+      steps.forEach((_, i) => set(i, 'done'));
+      const rec = d.record ? '<p class="muted">Record: ' + esc(d.record) + '</p>' : '';
+      let body;
+      if (d.compared && d.match) {
+        body = '<div class="banner green"><strong>✅ Premiums match.</strong><br>'
+          + 'MIC: ' + esc(d.mic) + ' &nbsp; Tameen: ' + esc(d.tameen) + '</div>';
+      } else if (d.compared) {
+        body = '<div class="banner red"><strong>⚠ Premium MISMATCH — do not confirm.</strong><br>'
+          + 'MIC: ' + esc(d.mic) + ' &nbsp; Tameen: ' + esc(d.tameen)
+          + ' &nbsp; Difference: ' + esc(d.diff) + ' OMR (allowed ' + esc(d.tolerance) + ' OMR)</div>';
+      } else {
+        body = '<div class="banner info"><strong>Could not compare the premiums automatically.</strong><br>'
+          + 'MIC: ' + esc(d.mic) + ' &nbsp; Tameen: ' + esc(d.tameen) + ' — please check both by hand.</div>';
+      }
+      let details = '';
+      if (d.prepared) {
+        details = '<h2>Details that were filled</h2><div class="kv">';
+        for (const k in d.prepared) {
+          details += '<div class="k">' + esc(k) + '</div><div class="v">' + esc(d.prepared[k]) + '</div>';
+        }
+        details += '</div>';
+      }
+      showResult(body + rec + details);
+      src.close();
+    }
+  };
+  src.onerror = () => { /* stream closed after final/error — nothing to do */ };
+</script>
+{% endblock %}
