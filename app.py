@@ -35,7 +35,7 @@ from playwright.sync_api import sync_playwright
 from common import (
     MIC_HOME_URL, PREMIUM_TOLERANCE,
     read_field, read_premium, parse_tameen_date, compute_period_from, split_plate,
-    expiry_far_off,
+    expiry_far_off, enable_download_dialogs,
     tameen_go_to_payments, tameen_click_payments_by_channel,
     tameen_reset_to_payments,
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
@@ -496,6 +496,8 @@ def worker_main():
             # Native-dialog auto-accept on BOTH tabs (same as production.py).
             mic_page.on("dialog", lambda d: d.accept())
             tameen_page.on("dialog", lambda d: d.accept())
+            # Restore a normal 'Save As' dialog for the employee's Print → Download step.
+            enable_download_dialogs(context)
             mic_page.goto(MIC_HOME_URL, timeout=60000)
 
             # Show the Tameen tab when the browser opens — that's the one the

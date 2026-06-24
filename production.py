@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright
 from common import (
     MIC_HOME_URL,
     read_field, parse_tameen_date, compute_period_from, split_plate,
-    expiry_far_off,
+    expiry_far_off, enable_download_dialogs,
     tameen_go_to_payments, tameen_click_payments_by_channel,
     tameen_select_channel, tameen_reset_to_payments,
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
@@ -186,6 +186,9 @@ with sync_playwright() as p:
     # See errorlog.md.txt (entry 1) for why the two dialog types are handled apart.
     mic_page.on("dialog", lambda dialog: dialog.accept())
     tameen_page.on("dialog", lambda dialog: dialog.accept())
+
+    # Restore a normal 'Save As' dialog for the employee's Print → Download step.
+    enable_download_dialogs(context)
 
     mic_page.goto(MIC_HOME_URL, timeout=60000)
 

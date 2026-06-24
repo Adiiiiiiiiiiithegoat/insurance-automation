@@ -151,6 +151,49 @@ def expiry_far_off(expiry, months: int = 1) -> bool:
     return expiry > cutoff
 
 
+def save_download_with_dialog(download) -> None:
+    """Give a normal browser 'Save As' dialog for a Playwright-intercepted download.
+
+    Playwright (accept_downloads is on by default) captures downloads to a temp file
+    named with a random GUID and suppresses Chrome's native save prompt — so the
+    employee's Print → Download produces GUID files with no chance to name them.
+    This pops a real Save As dialog so they can name it and save it as a PDF.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+
+    suggested = download.suggested_filename or ""
+    if not suggested.lower().endswith(".pdf"):
+        suggested = "MIC_Policy.pdf"          # GUID/extensionless → sensible default
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    path = filedialog.asksaveasfilename(
+        title="Save policy PDF",
+        initialfile=suggested,
+        defaultextension=".pdf",
+        filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+    )
+    root.destroy()
+
+    if not path:
+        download.cancel()
+        print("  ⚠️  Download cancelled (no file name chosen).")
+        return
+    download.save_as(path)
+    print(f"  ✅  Saved download to: {path}")
+
+
+def enable_download_dialogs(context) -> None:
+    """Wire save_download_with_dialog onto every current and future tab/popup, so a
+    download started from any tab (including the PDF viewer the Print opens) prompts
+    for a name like a normal browser instead of silently saving a GUID file."""
+    for pg in context.pages:
+        pg.on("download", save_download_with_dialog)
+    context.on("page", lambda pg: pg.on("download", save_download_with_dialog))
+
+
 def split_plate(vehicle_number: str):
     """
     Step 13: Tameen gives e.g. 'B S-4788'.
