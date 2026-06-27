@@ -63,15 +63,20 @@
         body = '<div class="banner info"><strong>Could not compare the premiums automatically.</strong><br>'
           + 'MIC: ' + esc(d.mic) + ' &nbsp; Tameen: ' + esc(d.tameen) + ' — please check both by hand.</div>';
       }
-      let details = '';
+      let details = '', flagBanner = '';
+      const FLAG = '⚠ Expiry Flag';
       if (d.prepared) {
+        if (d.prepared[FLAG]) {
+          flagBanner = '<div class="banner alert">⚠ EXPIRY WARNING — ' + esc(d.prepared[FLAG]) + '</div>';
+        }
         details = '<h2>Details that were filled</h2><div class="kv">';
         for (const k in d.prepared) {
-          details += '<div class="k">' + esc(k) + '</div><div class="v">' + esc(d.prepared[k]) + '</div>';
+          const f = (k === FLAG) ? ' flag' : '';
+          details += '<div class="k' + f + '">' + esc(k) + '</div><div class="v' + f + '">' + esc(d.prepared[k]) + '</div>';
         }
         details += '</div>';
       }
-      showResult(body + rec + details);
+      showResult(flagBanner + body + rec + details);
       src.close();
     }
   };

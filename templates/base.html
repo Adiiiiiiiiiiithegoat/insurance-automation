@@ -52,6 +52,11 @@
     .banner.green{background:#e6f6ef;border:2px solid var(--green);color:#0f6b4c}
     .banner.red{background:#fbe9e9;border:2px solid var(--warn);color:#9c2a2a}
     .banner.info{background:#eef2fb;border:2px solid #c9d4ec;color:var(--navy)}
+    .banner.alert{background:#e11900;border:3px solid #b30f00;color:#fff;font-weight:800;
+      font-size:20px;box-shadow:0 0 0 4px #ffd2cc;animation:flagpulse 1s ease-in-out 3}
+    @keyframes flagpulse{50%{box-shadow:0 0 0 10px #ffb3a8}}
+    .kv .k.flag,.kv .v.flag{background:#e11900;color:#fff !important;font-weight:800;
+      padding:4px 8px;border-radius:6px}
     /* checklist */
     ul.steps{list-style:none;padding:0;margin:18px 0}
     ul.steps li{display:flex;align-items:center;gap:14px;padding:12px 4px;

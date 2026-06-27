@@ -139,8 +139,9 @@ def compute_period_from(expiry) -> str:
 
 
 def expiry_far_off(expiry, months: int = 1) -> bool:
-    """True if the policy expiry is more than `months` calendar month(s) after today.
-    Flags records whose previous policy hasn't lapsed yet (renewing too early)."""
+    """True if the policy expiry is `months` calendar month(s) or more after today.
+    Flags records whose previous policy hasn't lapsed yet (renewing too early).
+    The one-month mark itself flags: today 26-Jun → 26-Jul and onwards flag."""
     if expiry is None:
         return False
     today = date.today()
@@ -148,7 +149,7 @@ def expiry_far_off(expiry, months: int = 1) -> bool:
     y = today.year + m // 12
     m = m % 12
     cutoff = date(y, m + 1, min(today.day, calendar.monthrange(y, m + 1)[1]))
-    return expiry > cutoff
+    return expiry >= cutoff
 
 
 def save_download_with_dialog(download) -> None:

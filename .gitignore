@@ -23,6 +23,10 @@ env/
 Thumbs.db
 .DS_Store
 *.swp
+*.lnk
 
 # Screenshots may contain customer PII — never commit
 screenshots/
+
+# Downloaded customer documents (Civil ID / licence images) — never commit
+iran_uploads/
