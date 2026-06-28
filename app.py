@@ -22,6 +22,7 @@ helpers and reset/nav helpers take plain args and don't prompt, so we call them 
 The policy is left as DRAFT. There is no approve/save/submit step anywhere here.
 """
 import json
+import os
 import queue
 import threading
 import webbrowser
@@ -35,7 +36,7 @@ from playwright.sync_api import sync_playwright
 from common import (
     MIC_HOME_URL, PREMIUM_TOLERANCE,
     read_field, read_premium, parse_tameen_date, compute_period_from, split_plate,
-    expiry_far_off, enable_download_dialogs,
+    expiry_far_off,
     tameen_go_to_payments, tameen_click_payments_by_channel,
     tameen_reset_to_payments,
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
@@ -52,6 +53,11 @@ progress_queue: "queue.Queue[dict]" = queue.Queue()
 
 worker_ready = threading.Event()
 worker_state = {"startup_error": None}
+
+# Tameen dashboard root. A goto() here lands on the dashboard (PAYMENTS tile) from
+# ANY page while keeping the logged-in session cookie — used to force a reset back
+# to a known state when the gentle in-app reset can't reach the Payments page.
+TAMEEN_DASHBOARD_URL = "https://mis.tameen.om/dashboard"
 
 # What the live progress checklist shows, in order. The worker emits a step event
 # (start/done) per index, matching this list. Index 0 is the Tameen read; 1..8 are
@@ -463,6 +469,48 @@ def _skip_debugger_pauses(page):
         pass
 
 
+def _close_extra_tabs(context, keep):
+    """Close every tab except the working ones in `keep` (the Tameen + MIC tabs).
+    Issuing a policy leaves clutter open — License/Mulkiya document tabs (target=
+    _blank) and the Print → PDF viewer tab — so reset wipes them out."""
+    for pg in list(context.pages):
+        if pg not in keep:
+            try:
+                pg.close()
+            except Exception:
+                pass
+
+
+def _autosave_download(download):
+    """Save a Print → Download PDF straight to the Downloads folder, no dialog.
+    Runs on the worker thread but returns immediately (just a file write), so the
+    worker never blocks the way the old tkinter 'Save As' dialog did. A unique name
+    is chosen so a second policy never overwrites the first."""
+    try:
+        name = download.suggested_filename or "MIC_Policy.pdf"
+        if not name.lower().endswith(".pdf"):
+            name = "MIC_Policy.pdf"
+        folder = os.path.join(os.path.expanduser("~"), "Downloads")
+        os.makedirs(folder, exist_ok=True)
+        stem, ext = os.path.splitext(name)
+        target, n = os.path.join(folder, name), 1
+        while os.path.exists(target):
+            target = os.path.join(folder, f"{stem} ({n}){ext}")
+            n += 1
+        download.save_as(target)
+        print(f"  ✅  Saved policy PDF to: {target}")
+    except Exception as e:
+        print(f"  ⚠️  Could not save the download automatically: {e}")
+
+
+def _wire_downloads(context):
+    """Attach the auto-save handler to every current and future tab, so a download
+    from any tab (incl. the PDF viewer the Print opens) is saved without a dialog."""
+    for pg in context.pages:
+        pg.on("download", _autosave_download)
+    context.on("page", lambda pg: pg.on("download", _autosave_download))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # THE WORKER THREAD — owns ALL Playwright objects.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,8 +544,9 @@ def worker_main():
             # Native-dialog auto-accept on BOTH tabs (same as production.py).
             mic_page.on("dialog", lambda d: d.accept())
             tameen_page.on("dialog", lambda d: d.accept())
-            # Restore a normal 'Save As' dialog for the employee's Print → Download step.
-            enable_download_dialogs(context)
+            # Auto-save Print → Download PDFs to the Downloads folder (no dialog, so
+            # the single browser worker never blocks waiting on a Save As window).
+            _wire_downloads(context)
             mic_page.goto(MIC_HOME_URL, timeout=60000)
 
             # Show the Tameen tab when the browser opens — that's the one the
@@ -554,10 +603,28 @@ def worker_main():
 
                     elif action in ("reset", "back_to_channels"):
                         if action == "reset":
-                            mic_reset_to_home(mic_page)
-                            tameen_reset_to_payments(tameen_page)
+                            # Close policy clutter first: only the Tameen + MIC tabs stay.
+                            _close_extra_tabs(context, (tameen_page, mic_page))
+                            # Guard each tab so one failing doesn't abort the rest.
+                            try:
+                                mic_reset_to_home(mic_page)
+                            except Exception as e:
+                                print(f"  ⚠️  MIC reset issue: {e}")
+                            try:
+                                tameen_reset_to_payments(tameen_page)
+                            except Exception as e:
+                                print(f"  ⚠️  Tameen reset issue: {e}")
                         # No bring_to_front here either — same reason as select_channel.
-                        tameen_click_payments_by_channel(tameen_page)
+                        # Land on 'Payments by Channel'. If the gentle reset didn't get
+                        # Tameen there (stuck deep after issuing), force a goto to the
+                        # dashboard — works from ANY page — and retry, bounded.
+                        try:
+                            tameen_click_payments_by_channel(tameen_page)
+                        except Exception:
+                            tameen_page.goto(TAMEEN_DASHBOARD_URL,
+                                             wait_until="domcontentloaded", timeout=30000)
+                            tameen_go_to_payments(tameen_page)
+                            tameen_click_payments_by_channel(tameen_page)
                         st["channels"] = _read_channels(tameen_page)
                         result_queue.put({"ok": True, "channels": st["channels"]})
 
@@ -578,7 +645,13 @@ def run_action(action, **args):
     if worker_state["startup_error"]:
         return {"ok": False, "error": worker_state["startup_error"]}
     command_queue.put({"action": action, "args": args})
-    return result_queue.get()
+    try:
+        return result_queue.get(timeout=180)
+    except queue.Empty:
+        return {"ok": False, "error": (
+            "The browser did not respond in time. If a 'Save As' window is open "
+            "behind the browser, finish it and try again; otherwise close this "
+            "window and relaunch with start.bat.")}
 
 
 def _channels_for_template(channels):
