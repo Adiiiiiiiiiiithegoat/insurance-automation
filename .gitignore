@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+deploy-token.txt
 
 # --- Browser automation profile (cookies, sessions, cache — sensitive & huge) ---
 automation_profile/
