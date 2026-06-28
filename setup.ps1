@@ -80,30 +80,37 @@ function Ensure-Git {
     # Make sure Git is on the machine (needed for start.bat's auto-update).
     if (Test-Git) { Write-Host "Git already installed - skipping."; return }
 
-    Write-Host "Git was not found. Installing Git for Windows..."
+    Write-Host "Git was not found. Installing a private copy (no administrator needed)..."
 
-    # Prefer winget: silent, no version to pin, installs per-user (no admin popup).
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        & winget install --id Git.Git -e --scope user --silent `
-            --accept-package-agreements --accept-source-agreements
-        Update-PathFromRegistry
-        if (Test-Git) { Write-Host "Git installed successfully."; return }
-    }
-
-    # Fallback: download the official Git for Windows installer and run it silently.
+    # PortableGit: a self-extracting archive that unpacks to a folder with NO admin
+    # rights and NO Microsoft Store / winget dependency, so it always works silently.
     # ponytail: pinned version like the Python installer above; bump when it rots.
-    $url = 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/Git-2.47.1-64-bit.exe'
-    $exe = Join-Path $env:TEMP 'git-installer.exe'
+    $url = 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/PortableGit-2.47.1-64-bit.7z.exe'
+    $exe = Join-Path $env:TEMP 'portablegit.exe'
+    $dir = Join-Path $env:LOCALAPPDATA 'Programs\Git'
     try {
         Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
     } catch {
-        Write-Host "  Could not download Git. Install it by hand from https://git-scm.com/download/win, then re-run setup."
+        Write-Host "  Could not download Git. Check the internet connection and re-run setup."
         exit 1
     }
-    Start-Process -FilePath $exe -Wait -ArgumentList @(
-        '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/NOCANCEL'
-    ) | Out-Null
-    Update-PathFromRegistry
+    # 7-Zip self-extractor flags: -o<dir> (extract here), -y (assume yes), silent.
+    Start-Process -FilePath $exe -Wait -ArgumentList "-o`"$dir`"", '-y' | Out-Null
+
+    $gitCmd = Join-Path $dir 'cmd'
+    if (-not (Test-Path (Join-Path $gitCmd 'git.exe'))) {
+        Write-Host "  Git did not extract as expected. Install it by hand from https://git-scm.com/download/win, then re-run setup."
+        exit 1
+    }
+
+    # Put it on PATH for THIS process (rest of setup uses git) and the USER PATH
+    # (so start.bat's `where git` finds it in future windows) without admin.
+    $env:Path = "$gitCmd;$env:Path"
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath -notlike "*$gitCmd*") {
+        [Environment]::SetEnvironmentVariable('Path', "$gitCmd;$userPath", 'User')
+    }
+
     if (Test-Git) {
         Write-Host "Git installed successfully."
     } else {
