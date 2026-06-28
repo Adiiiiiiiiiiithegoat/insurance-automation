@@ -167,11 +167,14 @@ def save_download_with_dialog(download) -> None:
     if not suggested.lower().endswith(".pdf"):
         suggested = "MIC_Policy.pdf"          # GUID/extensionless → sensible default
 
+    downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+
     root = tk.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
     path = filedialog.asksaveasfilename(
         title="Save policy PDF",
+        initialdir=downloads if os.path.isdir(downloads) else None,
         initialfile=suggested,
         defaultextension=".pdf",
         filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
