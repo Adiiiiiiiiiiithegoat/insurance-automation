@@ -9,6 +9,19 @@ if not exist "%VPY%" (
   pause & exit /b 1
 )
 
+REM --- Auto-update: pull the latest code from GitHub on every launch. ---
+REM Force-match the remote so it always works (no merge prompts). .env and the
+REM venv are gitignored, so they survive the reset. Skip silently if git is absent.
+pushd "%~dp0"
+where git >nul 2>&1
+if %errorlevel%==0 (
+  git fetch origin master >nul 2>&1
+  git reset --hard origin/master >nul 2>&1
+  "%VPY%" -m pip install -r requirements.txt --quiet >nul 2>&1
+  echo App updated - starting...
+)
+popd
+
 echo Starting the control panel...
 echo A browser tab will open at http://localhost:5000
 echo (Keep this window open while you work. Close it to stop.)

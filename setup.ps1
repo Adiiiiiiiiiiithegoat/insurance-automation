@@ -72,9 +72,52 @@ function Update-PathFromRegistry {
     } catch {}
 }
 
+function Test-Git {
+    try { $null = & git --version 2>$null; return ($LASTEXITCODE -eq 0) } catch { return $false }
+}
+
+function Ensure-Git {
+    # Make sure Git is on the machine (needed for start.bat's auto-update).
+    if (Test-Git) { Write-Host "Git already installed - skipping."; return }
+
+    Write-Host "Git was not found. Installing Git for Windows..."
+
+    # Prefer winget: silent, no version to pin, installs per-user (no admin popup).
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        & winget install --id Git.Git -e --scope user --silent `
+            --accept-package-agreements --accept-source-agreements
+        Update-PathFromRegistry
+        if (Test-Git) { Write-Host "Git installed successfully."; return }
+    }
+
+    # Fallback: download the official Git for Windows installer and run it silently.
+    # ponytail: pinned version like the Python installer above; bump when it rots.
+    $url = 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/Git-2.47.1-64-bit.exe'
+    $exe = Join-Path $env:TEMP 'git-installer.exe'
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+    } catch {
+        Write-Host "  Could not download Git. Install it by hand from https://git-scm.com/download/win, then re-run setup."
+        exit 1
+    }
+    Start-Process -FilePath $exe -Wait -ArgumentList @(
+        '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/NOCANCEL'
+    ) | Out-Null
+    Update-PathFromRegistry
+    if (Test-Git) {
+        Write-Host "Git installed successfully."
+    } else {
+        Write-Host "  Git was installed but is not visible yet. Close this window, open a new one, and run setup.bat again."
+        exit 1
+    }
+}
+
 Write-Host "============================================================"
 Write-Host "   Muscat Insurance Automation  -  ONE-TIME SETUP"
 Write-Host "============================================================"
+Write-Host ""
+
+Ensure-Git
 Write-Host ""
 
 $py = Find-Python
@@ -169,3 +212,8 @@ Write-Host ""
 Write-Host "============================================================"
 Write-Host "   Setup complete  -  you can now double-click start.bat"
 Write-Host "============================================================"
+
+# Remember credentials after the first pull so employee machines never re-prompt.
+git config --global credential.helper store
+Write-Host ""
+Write-Host "Setup complete. You can now double-click start.bat to launch the app."
