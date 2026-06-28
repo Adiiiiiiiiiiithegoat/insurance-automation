@@ -17,10 +17,18 @@ if (-not $Drive) {
 }
 
 $dest = Join-Path $Drive 'insurance-automation'
+
+# Wipe any previous copy first. robocopy /E only ADDS/updates files; it would
+# leave a stale .env (your credentials!) or old customer files from an earlier
+# deploy sitting on the stick. The name guard keeps us from deleting the drive root.
+if ((Split-Path $dest -Leaf) -eq 'insurance-automation' -and (Test-Path $dest)) {
+    Write-Host "Clearing the previous copy on the USB..."
+    Remove-Item $dest -Recurse -Force
+}
+
 Write-Host "Copying project to $dest (this can take a minute)..."
 
-# robocopy mirrors the folder, skipping the dirs/files below. .git is NOT
-# excluded, so the copy stays a real clone with 'origin' already set.
+# .git is NOT excluded, so the copy stays a real clone with 'origin' already set.
 robocopy $src $dest /E /R:1 /W:1 /NFL /NDL /NJH /NJS `
     /XD venv automation_profile screenshots iran_uploads __pycache__ .pytest_cache `
     /XF .env *.pyc | Out-Null
