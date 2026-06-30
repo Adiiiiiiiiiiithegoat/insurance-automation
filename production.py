@@ -161,6 +161,9 @@ with sync_playwright() as p:
         ignore_https_errors=True,          # MIC is on :444 with a custom cert
     )
 
+    if context.pages:
+        context.pages[0].close()
+
     print("Opening Tameen website...")
     tameen_page = context.new_page()
     # 2 minutes (120000 ms) per action — a safety net so nothing can ever hang for
