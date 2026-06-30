@@ -15,10 +15,21 @@ REM venv are gitignored, so they survive the reset. Skip silently if git is abse
 pushd "%~dp0"
 where git >nul 2>&1
 if %errorlevel%==0 (
-  git fetch origin master >nul 2>&1
-  git reset --hard origin/master >nul 2>&1
-  "%VPY%" -m pip install -r requirements.txt --quiet >nul 2>&1
-  echo App updated - starting...
+  echo Checking GitHub for updates...
+  git fetch origin master
+  if errorlevel 1 (
+    echo.
+    echo WARNING: could NOT reach GitHub - this laptop did NOT update.
+    echo   Check the internet connection, or the GitHub sign-in token.
+    echo   Running with the code already on this laptop.
+    echo.
+  ) else (
+    git reset --hard origin/master >nul
+    "%VPY%" -m pip install -r requirements.txt --quiet
+    echo App updated to the latest version.
+  )
+) else (
+  echo Git is not installed - skipping auto-update.
 )
 popd
 
