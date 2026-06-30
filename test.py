@@ -1,5 +1,6 @@
 from playwright.sync_api import sync_playwright
 from datetime import timedelta, date
+import json
 import os
 from common import (
     MIC_HOME_URL,
@@ -1035,8 +1036,34 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
     print("\n── New India Tab 3: Vehicle Details ──")
     ni_click_tab(page, "Vehicle Details")
 
+    # Car DB built by ni_car_scraper.py — lets us map a brand that New India lists
+    # as a *model* (e.g. 'MINI COOPER' under 'BMW') back to its real Make.
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ni_car_db.json")
+    if os.path.exists(db_path):
+        with open(db_path, encoding="utf-8") as f:
+            car_db = json.load(f)
+    else:
+        car_db = {}
+        print("  ⚠️  ni_car_db.json not found — run ni_car_scraper.py once to build the "
+              "car database. Falling back to direct match only.")
+
     if brand:
-        ni_select_contains(page, "Make", [brand])
+        if not ni_select_contains(page, "Make", [brand]):
+            # Brand may actually be a MODEL under another Make — look it up in the DB.
+            bl = brand.lower()
+            real_make = None
+            for mk, models in car_db.items():
+                if any(bl in str(m).lower() for m in models):
+                    real_make = mk
+                    break
+            if real_make:
+                print(f"  ℹ️  Brand '{brand}' not found as a Make — found it as a model "
+                      f"under '{real_make}'. Selecting {real_make} as Make.")
+                ni_select_contains(page, "Make", [real_make])
+            else:
+                print(f"  ⚠️  Could not find '{brand}' as a Make or in the car database — "
+                      "please select Make and Model by hand.")
+
         # Selecting Make reloads the Model list — wait until it has real options
         # (more than just the placeholder 'Select') before choosing the Model.
         for _ in range(30):
