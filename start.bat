@@ -39,5 +39,6 @@ echo (Keep this window open while you work. Close it to stop.)
 
 REM app.py opens the browser itself once Flask is up, so we do NOT open it here
 REM (that was causing the tab to open twice).
+set BROWSER=edge
 "%VPY%" "%~dp0app.py"
 pause
