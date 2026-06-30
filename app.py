@@ -533,10 +533,8 @@ def worker_main():
             # Mulkiya document tabs that open via target=_blank links. Registered
             # before any new_page so the two main tabs are covered too.
             context.on("page", _skip_debugger_pauses)
-            if context.pages:
-                context.pages[0].close()
 
-            tameen_page = context.new_page()
+            tameen_page = context.pages[0] if context.pages else context.new_page()
             tameen_page.set_default_timeout(120000)
             _skip_debugger_pauses(tameen_page)
             tameen_page.goto("https://mis.tameen.om/dashboard/login", timeout=60000)
