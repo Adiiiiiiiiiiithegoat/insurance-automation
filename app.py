@@ -25,6 +25,7 @@ import json
 import os
 import queue
 import threading
+import time
 import webbrowser
 
 from flask import Flask, Response, render_template, redirect, url_for
@@ -774,5 +775,8 @@ if __name__ == "__main__":
     # use_reloader=False so Flask does not spawn a SECOND process (which would try
     # to launch a second browser). threaded=True is safe — only the worker thread
     # ever touches Playwright.
-    webbrowser.open("http://localhost:5000")
+    def _open_browser():
+        time.sleep(1.5)
+        webbrowser.open("http://localhost:5000")
+    threading.Thread(target=_open_browser, daemon=True).start()
     app.run(host="127.0.0.1", port=5000, threaded=True, use_reloader=False, debug=False)
