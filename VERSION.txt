@@ -1,0 +1,3 @@
+Auto-update test marker.
+If this file shows up on the laptop AFTER running start.bat, GitHub sync is working.
+Pushed: 2026-06-30 (test #1)
