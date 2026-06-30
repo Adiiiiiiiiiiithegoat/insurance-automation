@@ -183,10 +183,30 @@ $pyArgs = @()
 if ($py.Count -gt 1) { $pyArgs = $py[1..($py.Count - 1)] }
 function Invoke-Py { & $pyExe @pyArgs @args }
 
-$venvPy = Join-Path $root 'venv\Scripts\python.exe'
-if ((Test-Path $venvPy) -and (Test-RealPython @($venvPy))) {
-    Write-Host "Virtual environment already exists - reusing it."
-} else {
+function Test-VenvUsable([string]$venvPython) {
+    # A venv COPIED from another machine has incompatible compiled extensions
+    # (e.g. greenlet._greenlet.pyd) and absolute paths to a user that doesn't exist
+    # here, yet pip reports every package "already satisfied" and never rebuilds
+    # them. So only reuse a venv if its key packages actually IMPORT on THIS machine.
+    try {
+        & $venvPython -c "import flask, dotenv; from playwright.sync_api import sync_playwright" 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
+}
+
+$venvPy  = Join-Path $root 'venv\Scripts\python.exe'
+$venvDir = Join-Path $root 'venv'
+$reuseVenv = $false
+if (Test-Path $venvPy) {
+    if (Test-VenvUsable $venvPy) {
+        Write-Host "Virtual environment already exists and works - reusing it."
+        $reuseVenv = $true
+    } else {
+        Write-Host "Existing venv is broken or was copied from another machine - rebuilding it..."
+        Remove-Item $venvDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+if (-not $reuseVenv) {
     Write-Host "Creating the virtual environment (venv folder)..."
     Invoke-Py -m venv venv
 }
