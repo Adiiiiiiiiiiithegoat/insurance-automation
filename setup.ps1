@@ -1,7 +1,15 @@
-# One-time, A-to-Z setup for the Muscat Insurance automation.
-# Detects a REAL Python (ignoring the Microsoft Store stub), installs Python
-# itself if none is found, then builds the venv, installs the packages and the
-# Chromium browser, and creates a blank .env. Run via setup.bat.
+# One-time, A-to-Z setup for the Insurance Automation control panel.
+# Installs Git (portable, no admin) and Python (per-user, no admin) only if they
+# are missing, builds the venv, installs the packages from requirements.txt,
+# installs the Chromium browser, writes a blank .env, then SELF-CHECKS the install.
+# Run via setup.bat. Safe to run again on an already-working machine (idempotent).
+
+# ── VERSION PINS — if a download fails with 404, replace the URL/version below ──
+# Python:      latest stable from https://www.python.org/downloads/windows/
+# PortableGit: latest from        https://github.com/git-for-windows/git/releases
+$PYTHON_VERSION = '3.12.7'
+$PYTHON_URL     = 'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe'
+$GIT_URL        = 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/PortableGit-2.47.1-64-bit.7z.exe'
 
 $ErrorActionPreference = 'Stop'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
@@ -84,12 +92,10 @@ function Ensure-Git {
 
     # PortableGit: a self-extracting archive that unpacks to a folder with NO admin
     # rights and NO Microsoft Store / winget dependency, so it always works silently.
-    # ponytail: pinned version like the Python installer above; bump when it rots.
-    $url = 'https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/PortableGit-2.47.1-64-bit.7z.exe'
     $exe = Join-Path $env:TEMP 'portablegit.exe'
     $dir = Join-Path $env:LOCALAPPDATA 'Programs\Git'
     try {
-        Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+        Invoke-WebRequest -Uri $GIT_URL -OutFile $exe -UseBasicParsing
     } catch {
         Write-Host "  Could not download Git. Check the internet connection and re-run setup."
         exit 1
@@ -120,7 +126,7 @@ function Ensure-Git {
 }
 
 Write-Host "============================================================"
-Write-Host "   Muscat Insurance Automation  -  ONE-TIME SETUP"
+Write-Host "   Insurance Automation  -  ONE-TIME SETUP"
 Write-Host "============================================================"
 Write-Host ""
 
@@ -131,11 +137,10 @@ $py = Find-Python
 
 if (-not $py) {
     Write-Host "Python was not found on this computer."
-    Write-Host "Downloading the official Python 3 installer..."
-    $url = 'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe'
+    Write-Host "Downloading the official Python $PYTHON_VERSION installer..."
     $exe = Join-Path $env:TEMP 'python-installer.exe'
     try {
-        Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+        Invoke-WebRequest -Uri $PYTHON_URL -OutFile $exe -UseBasicParsing
     } catch {
         Write-Host ""
         Write-Host "  Could not download Python. Check your internet connection and"
@@ -190,9 +195,16 @@ if (-not (Test-Path $venvPy)) {
     exit 1
 }
 
-Write-Host "Installing the required packages (flask, playwright, python-dotenv)..."
+# Single source of truth for dependencies is requirements.txt — never a hardcoded
+# package list here (that used to drift from what start.bat installed).
+$reqFile = Join-Path $root 'requirements.txt'
+if (-not (Test-Path $reqFile)) {
+    Write-Host "  requirements.txt is missing next to setup. Cannot install packages."
+    exit 1
+}
+Write-Host "Installing the required packages from requirements.txt..."
 & $venvPy -m pip install --upgrade pip
-& $venvPy -m pip install flask playwright python-dotenv
+& $venvPy -m pip install -r $reqFile
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  Installing the packages failed. Check your internet connection and retry."
     exit 1
@@ -205,22 +217,75 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# Write a FULL .env template (all three insurers) only if one does not exist yet.
+# Never overwrite an .env that already holds real credentials.
 if (-not (Test-Path (Join-Path $root '.env'))) {
-    Write-Host "Creating a template .env file for your login..."
+    Write-Host "Creating a template .env file for your logins..."
     @(
-        '# Fill in your Muscat Insurance (MIC) login below, then SAVE this file.',
+        '# ============================================================',
+        '#  Insurance Automation - credentials',
+        '#  Fill in your real logins below, then SAVE this file.',
+        '#  This file is git-ignored and must NEVER be committed or shared.',
+        '# ============================================================',
+        '# --- Muscat Insurance (MIC) - REQUIRED (the web control panel uses this) ---',
         'MIC_USERNAME=',
-        'MIC_PASSWORD='
+        'MIC_PASSWORD=',
+        '# --- New India Assurance - optional (only needed for the New India flow) ---',
+        'NI_USERNAME=',
+        'NI_PASSWORD=',
+        '# --- IRAN Insurance - optional (only needed for the IRAN flow) ---',
+        'IRAN_USERNAME=',
+        'IRAN_PASSWORD='
     ) | Set-Content -Path (Join-Path $root '.env') -Encoding ASCII
-    Write-Host "  A blank .env was created. Open it and fill in MIC_USERNAME and MIC_PASSWORD."
+    Write-Host "  A blank .env was created. Open it and fill in at least MIC_USERNAME and MIC_PASSWORD."
+}
+
+# Remember credentials after the first pull so employee machines never re-prompt.
+git config --global credential.helper store
+
+# ── SELF-CHECK: prove the install actually works before declaring success ──────
+# Verifies (1) flask/playwright/dotenv import, (2) the Chromium executable exists
+# on disk, (3) app.py is present. Runs in a throwaway temp script (nothing added
+# to the repo) and exits non-zero on failure so the employee knows to re-run.
+Write-Host ""
+Write-Host "Running a quick self-check to confirm everything installed..."
+$check = Join-Path $env:TEMP "ia_selfcheck.py"
+@'
+import sys, os
+root = sys.argv[1]
+try:
+    import flask          # noqa: F401
+    import dotenv         # noqa: F401
+    from playwright.sync_api import sync_playwright
+except Exception as e:
+    print("FAIL: a required package did not import: %s" % e); sys.exit(2)
+try:
+    p = sync_playwright().start()
+    exe = p.chromium.executable_path
+    p.stop()
+    if not exe or not os.path.exists(exe):
+        print("FAIL: the Chromium browser is not installed (run setup again)."); sys.exit(3)
+except Exception as e:
+    print("FAIL: could not verify the Chromium browser: %s" % e); sys.exit(3)
+if not os.path.exists(os.path.join(root, "app.py")):
+    print("FAIL: app.py is missing next to setup."); sys.exit(4)
+print("OK")
+'@ | Set-Content -Path $check -Encoding ASCII
+
+$checkOut = & $venvPy $check $root
+$checkCode = $LASTEXITCODE
+Remove-Item $check -Force -ErrorAction SilentlyContinue
+
+if ($checkCode -ne 0) {
+    Write-Host ""
+    Write-Host "============================================================"
+    Write-Host "   SELF-CHECK FAILED: $checkOut"
+    Write-Host "   Please run setup.bat again, or report the line above."
+    Write-Host "============================================================"
+    exit 1
 }
 
 Write-Host ""
 Write-Host "============================================================"
-Write-Host "   Setup complete  -  you can now double-click start.bat"
+Write-Host "   SELF-CHECK PASSED  -  you can now double-click start.bat"
 Write-Host "============================================================"
-
-# Remember credentials after the first pull so employee machines never re-prompt.
-git config --global credential.helper store
-Write-Host ""
-Write-Host "Setup complete. You can now double-click start.bat to launch the app."
