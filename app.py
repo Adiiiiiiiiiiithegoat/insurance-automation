@@ -776,7 +776,20 @@ if __name__ == "__main__":
     # to launch a second browser). threaded=True is safe — only the worker thread
     # ever touches Playwright.
     def _open_browser():
+        import subprocess
         time.sleep(1.5)
-        webbrowser.open("http://localhost:5000")
+        url = "http://localhost:5000"
+        # Launch Chromium browsers directly with --new-window so Chrome/Edge don't
+        # open an extra blank tab on fresh startup (webbrowser.open can't suppress it).
+        for exe in [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]:
+            if os.path.exists(exe):
+                subprocess.Popen([exe, "--new-window", url])
+                return
+        webbrowser.open(url)
     threading.Thread(target=_open_browser, daemon=True).start()
     app.run(host="127.0.0.1", port=5000, threaded=True, use_reloader=False, debug=False)
