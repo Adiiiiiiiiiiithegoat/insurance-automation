@@ -1,0 +1,3 @@
+GitHub auto-update check.
+If you see this file on the laptop after running start.bat, the GitHub sync is working.
+Pushed: 2026-06-30 (check #2)
