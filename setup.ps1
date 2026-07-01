@@ -269,7 +269,7 @@ git config --global credential.helper store
 # to the repo) and exits non-zero on failure so the employee knows to re-run.
 Write-Host ""
 Write-Host "Running a quick self-check to confirm everything installed..."
-$check = Join-Path $env:TEMP "ia_selfcheck.py"
+$check = Join-Path ([System.IO.Path]::GetTempPath()) "ia_selfcheck.py"
 @'
 import sys, os
 root = sys.argv[1]
