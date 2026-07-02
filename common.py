@@ -42,6 +42,44 @@ TAMEEN_CHANNELS = ["Branchmotor", "Carsecure", "Kioskmotor",
 # The two section headings on that page.
 TAMEEN_SECTIONS = ["PAYMENT DONE CASES", "PAYMENT DONE DOCUMENT PENDING CASES"]
 
+# Fake in-page clipboard so read_field's copy-icon strategy never touches the
+# employee's real OS clipboard — they can copy/paste other things while this runs.
+# Covers both the modern Clipboard API (writeText/readText) and the legacy
+# document.execCommand('copy') path some sites still use.
+_CLIPBOARD_SHIM_JS = """
+() => {
+  window.__automationClipboard = '';
+  try {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: (text) => { window.__automationClipboard = String(text); return Promise.resolve(); },
+        readText: () => Promise.resolve(window.__automationClipboard),
+      },
+    });
+  } catch (e) {}
+  const origExec = document.execCommand ? document.execCommand.bind(document) : null;
+  document.execCommand = function(cmd, showUi, value) {
+    if (typeof cmd === 'string' && cmd.toLowerCase() === 'copy') {
+      const sel = window.getSelection().toString();
+      const active = document.activeElement;
+      const activeVal = (active && 'value' in active) ? active.value : '';
+      window.__automationClipboard = sel || activeVal || window.__automationClipboard;
+      return true;
+    }
+    return origExec ? origExec(cmd, showUi, value) : false;
+  };
+}
+"""
+
+
+def install_clipboard_shim(context) -> None:
+    """Call once, right after launch_persistent_context and before any goto().
+    Makes every page in this context (including ones opened later) use a fake
+    in-memory clipboard instead of the real OS one — read_field's clipboard.readText()
+    calls keep working exactly as before, just against the fake buffer."""
+    context.add_init_script(_CLIPBOARD_SHIM_JS)
+
 
 def _find_label(page, pattern, timeout: int):
     """Wait up to `timeout` for `pattern` to attach, then — if there's more than

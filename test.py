@@ -5,7 +5,7 @@ import os
 from common import (
     MIC_HOME_URL,
     read_field, parse_tameen_date, compute_period_from, split_plate,
-    expiry_far_off, enable_download_dialogs,
+    expiry_far_off, enable_download_dialogs, install_clipboard_shim,
     tameen_go_to_payments, tameen_click_payments_by_channel,
     tameen_select_channel, tameen_reset_to_payments,
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
@@ -1852,6 +1852,7 @@ with sync_playwright() as p:
         permissions=["clipboard-read", "clipboard-write"],
         ignore_https_errors=True,          # MIC is on :444 with a custom cert
     )
+    install_clipboard_shim(context)   # keep read_field off the real OS clipboard
 
     print("Opening Tameen website...")
     tameen_page = context.pages[0] if context.pages else context.new_page()

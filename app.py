@@ -45,7 +45,7 @@ from playwright.sync_api import sync_playwright
 from common import (
     MIC_HOME_URL, PREMIUM_TOLERANCE,
     read_field, read_premium, parse_tameen_date, compute_period_from, split_plate,
-    expiry_far_off,
+    expiry_far_off, install_clipboard_shim,
     tameen_go_to_payments, tameen_click_payments_by_channel,
     tameen_reset_to_payments,
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
@@ -545,6 +545,7 @@ def worker_main():
                 permissions=["clipboard-read", "clipboard-write"],
                 ignore_https_errors=True,
             )
+            install_clipboard_shim(context)   # keep read_field off the real OS clipboard
             # Defuse anti-debugger pauses on EVERY tab, including the License /
             # Mulkiya document tabs that open via target=_blank links. Registered
             # before any new_page so the two main tabs are covered too.
