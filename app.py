@@ -24,9 +24,17 @@ The policy is left as DRAFT. There is no approve/save/submit step anywhere here.
 import json
 import os
 import queue
+import sys
 import threading
 import time
 import webbrowser
+
+# Windows console defaults to cp1252, which chokes on the ✅/⚠️/🔑 emoji that
+# common.py's print()s use. Force UTF-8 so those prints never crash the worker thread.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 from flask import Flask, Response, render_template, redirect, url_for
 from playwright.sync_api import sync_playwright
@@ -407,7 +415,9 @@ def _process_record(tameen_page, mic_page, idx, st):
     Any failure becomes an error event (the 'flagged for review' path); the worker
     never crashes."""
     # ── Step 0: read the record from Tameen ──────────────────────────────────
+    run_t0 = time.time()
     progress_queue.put({"type": "step", "index": 0, "state": "start"})
+    t0 = time.time()
     try:
         rec = st["records"][idx]
         tameen_page.bring_to_front()
@@ -417,30 +427,36 @@ def _process_record(tameen_page, mic_page, idx, st):
     except Exception as e:
         progress_queue.put({"type": "error", "index": 0, "message": str(e), "record": ""})
         return
+    print(f"  ⏱  [TIMING] Step 0 (read Tameen record): {time.time() - t0:.1f}s")
     progress_queue.put({"type": "step", "index": 0, "state": "done"})
 
     # ── Steps 1..8: fill MIC (one helper per step, before/after events) ──────
     mic_page.bring_to_front()
     state = {}
     steps = [
-        lambda: mic_login_if_needed(mic_page),
-        lambda: mic_open_policy_create(mic_page),
-        lambda: state.__setitem__("is_comp", mic_choose_policy_type_and_create(mic_page, fill["type_source"])),
-        lambda: mic_get_licence(mic_page, fill["license_id"]),
-        lambda: mic_fill_policy_info(mic_page, fill["full_name"], fill["period_from"]),
-        lambda: mic_get_vehicle(mic_page, fill["plate_number"], fill["plate_code"]),
-        lambda: mic_fill_vehicle_info(mic_page, state.get("is_comp", False), fill["sum_insured"], fill["seats"]),
-        lambda: mic_calculate_and_check(mic_page, fill["tameen_total"]),
+        ("MIC login check", lambda: mic_login_if_needed(mic_page)),
+        ("Open policy create", lambda: mic_open_policy_create(mic_page)),
+        ("Choose type + Create", lambda: state.__setitem__("is_comp", mic_choose_policy_type_and_create(mic_page, fill["type_source"]))),
+        ("Get licence", lambda: mic_get_licence(mic_page, fill["license_id"])),
+        ("Fill policy info", lambda: mic_fill_policy_info(mic_page, fill["full_name"], fill["period_from"])),
+        ("Get vehicle", lambda: mic_get_vehicle(mic_page, fill["plate_number"], fill["plate_code"])),
+        ("Fill vehicle info", lambda: mic_fill_vehicle_info(mic_page, state.get("is_comp", False), fill["sum_insured"], fill["seats"])),
+        ("Calculate + check", lambda: mic_calculate_and_check(mic_page, fill["tameen_total"])),
     ]
-    for i, step in enumerate(steps, start=1):
+    # ponytail: timing prints are for the current speed investigation only, safe to
+    # delete once we've found the real bottleneck.
+    for i, (name, step) in enumerate(steps, start=1):
         progress_queue.put({"type": "step", "index": i, "state": "start"})
+        t0 = time.time()
         try:
             step()
         except Exception as e:
             progress_queue.put({"type": "error", "index": i, "message": str(e),
                                 "record": fill.get("record_text", "")})
             return
+        print(f"  ⏱  [TIMING] Step {i} ({name}): {time.time() - t0:.1f}s")
         progress_queue.put({"type": "step", "index": i, "state": "done"})
+    print(f"  ⏱  [TIMING] TOTAL record time: {time.time() - run_t0:.1f}s")
 
     # Re-read the premium so we can report the match/mismatch on screen. (Policy is
     # left as DRAFT — no approve/save step.)

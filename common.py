@@ -53,7 +53,10 @@ def read_field(page, label_text: str) -> str:
     # Fast-fail existence check. A label that isn't on this record (e.g. a record
     # whose whole name sits in 'First Name' and has no 'Last Name') must NOT cost
     # 15s+ per traversal — that long silence looked like a hang.
-    label = page.get_by_text(label_text, exact=True).first
+    # ponytail: exact=True string match broke on "First Name"; \s+ in the regex is
+    # more forgiving of stray/non-breaking whitespace in the label text.
+    label_pattern = re.compile(r"^\s*" + r"\s+".join(re.escape(w) for w in label_text.split()) + r"\s*$", re.I)
+    label = page.get_by_text(label_pattern).first
     try:
         label.wait_for(state="attached", timeout=2500)
     except Exception:

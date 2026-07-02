@@ -731,10 +731,10 @@ def ni_body_type_target(body_type: str, seats: str):
         return ["SALOON", "UPTO 15"]
     if "HATCHBACK" in b or "HATCH BACK" in b:
         return ["HATCH BACK", "UPTO 15"]
-    if "PICKUP" in b and seat_n == 3:
-        return ["PICKUP", "3 TON"]
-    if "PICKUP" in b and seat_n == 5:
-        return ["PICKUP", "4WD"]
+    if "PICKUP" in b or "PICK UP" in b:
+        # Only seats=3 gets UPTO 3 TONS; every other/unknown seat count defaults
+        # to 4WD instead of leaving Body Type blank.
+        return ["PICKUP", "3 TON"] if seat_n == 3 else ["PICKUP", "4WD"]
     return None
 
 
@@ -990,6 +990,13 @@ def ni_fill_primary_client(page, commencing_date: str, customer_name: str) -> No
     print("\n── New India Tab 1 (lower): policy details ──")
     # Overwrite the auto-filled commencing date; Escape closes the date-picker.
     ni_fill_by_label(page, "Commencing Date", commencing_date, press_escape=True)
+    # Blur the field so the site's onchange handler fires and computes Maturity
+    # Date — it only appears after focus leaves the field, not just on typing.
+    try:
+        page.keyboard.press("Tab")
+    except Exception:
+        pass
+    ni_settle(page)
     ni_select_exact(page, "Customer", NI_CUSTOMER)
     ni_fill_by_label(page, "Customer Name", customer_name)
     ni_fill_by_label(page, "Telephone No", NI_TELEPHONE)
@@ -1030,11 +1037,32 @@ def ni_fill_previous_policy(page, mileage: str, color: str, full_name: str):
     return brand, model, year
 
 
-def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats: str) -> None:
+def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats: str,
+                             tameen_make: str = "", tameen_model: str = "") -> None:
     """Tab 3 (Vehicle Details): Make (from Brand), Model (from Model, waits for the
-    list to reload after Make), and Body Type (from the Tameen body type + seats)."""
+    list to reload after Make), and Body Type (from the Tameen body type + seats).
+    tameen_make/tameen_model are a fallback for when New India's own vehicle lookup
+    doesn't recognize the vehicle and shows 'NOT FOUND' instead of a real Brand/Model.
+    """
     print("\n── New India Tab 3: Vehicle Details ──")
     ni_click_tab(page, "Vehicle Details")
+
+    # New India shows this as '** NOT FOUND **' (with asterisks) when its own
+    # Mulkiya lookup can't identify the vehicle — substring check, not exact match.
+    if not brand or "not found" in brand.strip().lower():
+        if tameen_make:
+            print(f"  ℹ️  New India Brand was '{brand or '(blank)'}' — using Tameen's "
+                  f"Make '{tameen_make}' instead.")
+            brand = tameen_make
+        else:
+            brand = ""
+    if not model or "not found" in model.strip().lower():
+        if tameen_model:
+            print(f"  ℹ️  New India Model was '{model or '(blank)'}' — using Tameen's "
+                  f"Model '{tameen_model}' instead.")
+            model = tameen_model
+        else:
+            model = ""
 
     # Car DB built by ni_car_scraper.py — lets us map a brand that New India lists
     # as a *model* (e.g. 'MINI COOPER' under 'BMW') back to its real Make.
@@ -1082,6 +1110,16 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
 
     if model:
         ni_select_contains(page, "Model", [model])
+        # Selecting a real Model can trigger another reload (same as Make → Model)
+        # that briefly removes/rebuilds the rest of the tab — wait for the Body
+        # Type dropdown to actually exist again before touching it.
+        for _ in range(30):
+            try:
+                if _ni_find_select(page, "Body Type") is not None:
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(NI_STEP_PAUSE)
 
     targets = ni_body_type_target(body_type, seats)
     if targets is None:
@@ -2028,6 +2066,16 @@ with sync_playwright() as p:
                         body_type = read_field(tameen_page, lbl)
                         if body_type:
                             break
+                    # Fallback for when New India's own Mulkiya lookup shows 'NOT FOUND'
+                    # for Brand/Model. Tameen's own field is misspelled 'Modal' on the
+                    # live site (that's the real label) — try it first so the normal
+                    # case doesn't print a bogus "'Model' not on this record" warning.
+                    tameen_make = read_field(tameen_page, "Make")
+                    tameen_model = ""
+                    for lbl in ("Modal", "Model"):
+                        tameen_model = read_field(tameen_page, lbl)
+                        if tameen_model:
+                            break
                     addons = read_tameen_addons(tameen_page)
 
                     # Policy type drives the Coverage Type dropdown later.
@@ -2071,7 +2119,8 @@ with sync_playwright() as p:
                     ni_fill_primary_top(ni_page, reg_no, license_id)
                     ni_fill_primary_client(ni_page, commencing_date, full_name)
                     brand, model, year = ni_fill_previous_policy(ni_page, mileage, color, full_name)
-                    ni_fill_vehicle_details(ni_page, brand, model, body_type, seats)
+                    ni_fill_vehicle_details(ni_page, brand, model, body_type, seats,
+                                             tameen_make, tameen_model)
                     ni_fill_premium_calculation(ni_page, policy_type, seats, addons)
                     # Intentionally STOPS here — nothing is saved/submitted.
 
