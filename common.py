@@ -43,6 +43,25 @@ TAMEEN_CHANNELS = ["Branchmotor", "Carsecure", "Kioskmotor",
 TAMEEN_SECTIONS = ["PAYMENT DONE CASES", "PAYMENT DONE DOCUMENT PENDING CASES"]
 
 
+def _find_label(page, pattern, timeout: int):
+    """Wait up to `timeout` for `pattern` to attach, then — if there's more than
+    one match (e.g. a hidden duplicate in a filter/search bar) — prefer the
+    first *visible* one instead of blindly trusting DOM order."""
+    loc = page.get_by_text(pattern)
+    try:
+        loc.first.wait_for(state="attached", timeout=timeout)
+    except Exception:
+        return None
+    for i in range(loc.count()):
+        cand = loc.nth(i)
+        try:
+            if cand.is_visible():
+                return cand
+        except Exception:
+            continue
+    return loc.first   # none reported visible (shouldn't normally happen) — best guess
+
+
 def read_field(page, label_text: str) -> str:
     """
     Read a Tameen detail field value.
@@ -54,12 +73,23 @@ def read_field(page, label_text: str) -> str:
     # whose whole name sits in 'First Name' and has no 'Last Name') must NOT cost
     # 15s+ per traversal — that long silence looked like a hang.
     # ponytail: exact=True string match broke on "First Name"; \s+ in the regex is
-    # more forgiving of stray/non-breaking whitespace in the label text.
-    label_pattern = re.compile(r"^\s*" + r"\s+".join(re.escape(w) for w in label_text.split()) + r"\s*$", re.I)
-    label = page.get_by_text(label_pattern).first
-    try:
-        label.wait_for(state="attached", timeout=2500)
-    except Exception:
+    # forgiving of stray/non-breaking whitespace, and [\s:*]* tolerates a trailing
+    # ':' or required-field '*' that some labels carry and others don't.
+    words = [re.escape(w) for w in label_text.split()]
+    strict_pattern = re.compile(r"^[\s*]*" + r"\s+".join(words) + r"[\s:*]*$", re.I)
+    label = _find_label(page, strict_pattern, timeout=2500)
+
+    if label is None:
+        # Last-resort: same words, but as an unanchored substring — catches a label
+        # that's wrapped in extra text (e.g. "Applicant First Name"). Short timeout
+        # so records that genuinely lack this field (Mobileapp + Product Name, etc.)
+        # still fail fast instead of adding a second full wait.
+        loose_pattern = re.compile(r"\s+".join(words), re.I)
+        label = _find_label(page, loose_pattern, timeout=800)
+        if label is not None:
+            print(f"  ℹ️  '{label_text}' matched loosely (label text wraps more than expected)")
+
+    if label is None:
         print(f"  ⚠️  '{label_text}' not on this record — skipping")
         return ""
 
