@@ -42,23 +42,26 @@ TAMEEN_CHANNELS = ["Branchmotor", "Carsecure", "Kioskmotor",
 # The two section headings on that page.
 TAMEEN_SECTIONS = ["PAYMENT DONE CASES", "PAYMENT DONE DOCUMENT PENDING CASES"]
 
-# Fake in-page clipboard so read_field's copy-icon strategy never touches the
-# employee's real OS clipboard — they can copy/paste other things while this runs.
-# Covers both the modern Clipboard API (writeText/readText) and the legacy
-# document.execCommand('copy') path some sites still use.
-_CLIPBOARD_SHIM_JS = """
+# Fake in-page clipboard, installed ONLY for the moment read_field's copy-icon
+# strategy needs it and restored immediately after — so the employee's real OS
+# clipboard is normal at every other instant, including right after the run ends
+# (no separate "switch back when done" step needed). Covers both the modern
+# Clipboard API (writeText/readText) and the legacy document.execCommand('copy')
+# path some sites still use.
+_INSTALL_CLIPBOARD_SHIM_JS = """
 () => {
+  if (window.__automationClipboardActive) return;   // already installed
+  window.__automationClipboardActive = true;
   window.__automationClipboard = '';
-  try {
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: {
-        writeText: (text) => { window.__automationClipboard = String(text); return Promise.resolve(); },
-        readText: () => Promise.resolve(window.__automationClipboard),
-      },
-    });
-  } catch (e) {}
-  const origExec = document.execCommand ? document.execCommand.bind(document) : null;
+  window.__realClipboard = navigator.clipboard;
+  window.__realExecCommand = document.execCommand.bind(document);
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: (text) => { window.__automationClipboard = String(text); return Promise.resolve(); },
+      readText: () => Promise.resolve(window.__automationClipboard),
+    },
+  });
   document.execCommand = function(cmd, showUi, value) {
     if (typeof cmd === 'string' && cmd.toLowerCase() === 'copy') {
       const sel = window.getSelection().toString();
@@ -67,18 +70,19 @@ _CLIPBOARD_SHIM_JS = """
       window.__automationClipboard = sel || activeVal || window.__automationClipboard;
       return true;
     }
-    return origExec ? origExec(cmd, showUi, value) : false;
+    return window.__realExecCommand(cmd, showUi, value);
   };
 }
 """
 
-
-def install_clipboard_shim(context) -> None:
-    """Call once, right after launch_persistent_context and before any goto().
-    Makes every page in this context (including ones opened later) use a fake
-    in-memory clipboard instead of the real OS one — read_field's clipboard.readText()
-    calls keep working exactly as before, just against the fake buffer."""
-    context.add_init_script(_CLIPBOARD_SHIM_JS)
+_RESTORE_CLIPBOARD_JS = """
+() => {
+  if (!window.__automationClipboardActive) return;
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: window.__realClipboard });
+  document.execCommand = window.__realExecCommand;
+  window.__automationClipboardActive = false;
+}
+"""
 
 
 def _find_label(page, pattern, timeout: int):
@@ -133,17 +137,23 @@ def read_field(page, label_text: str) -> str:
 
     # Strategy 1: copy icon → clipboard (bounded; clipboard.readText() stalls when
     # the window isn't OS-focused, so we race it against a timer and fast-fail the click).
+    # The fake clipboard is installed only for this block and always restored after,
+    # even on error, so the employee's real clipboard is untouched the rest of the time.
     try:
         page.bring_to_front()
-        copy_btn = label.locator("xpath=following-sibling::*[1]")
-        copy_btn.click(timeout=2500)
-        page.wait_for_timeout(300)
-        value = page.evaluate(
-            "() => Promise.race(["
-            "  navigator.clipboard.readText().catch(() => ''),"
-            "  new Promise(r => setTimeout(() => r(''), 1500))"
-            "])"
-        )
+        page.evaluate(_INSTALL_CLIPBOARD_SHIM_JS)
+        try:
+            copy_btn = label.locator("xpath=following-sibling::*[1]")
+            copy_btn.click(timeout=2500)
+            page.wait_for_timeout(300)
+            value = page.evaluate(
+                "() => Promise.race(["
+                "  navigator.clipboard.readText().catch(() => ''),"
+                "  new Promise(r => setTimeout(() => r(''), 1500))"
+                "])"
+            )
+        finally:
+            page.evaluate(_RESTORE_CLIPBOARD_JS)
         if value and value.strip():
             print(f"  ✅  Read '{label_text}': {value.strip()}")
             return value.strip()
