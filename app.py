@@ -953,6 +953,15 @@ def start_processing(idx):
     company = row.get("company") or "MIC"
     steps = NI_STEPS if company == "NEW_INDIA" else MIC_STEPS
     insurer = _INSURER_LABELS.get(company, "Muscat Insurance")
+    # Drop any events left over from a progress page that was abandoned before its
+    # stream reached final/error — otherwise this run's SSE stream would read those
+    # stale events first. Safe: the worker hasn't received this command yet, so the
+    # queue is empty on the normal path and only holds stale events otherwise.
+    try:
+        while True:
+            progress_queue.get_nowait()
+    except queue.Empty:
+        pass
     command_queue.put({"action": "process_record", "args": {"index": idx}})
     return render_template("progress.html", steps=steps, record_text=record_text,
                            insurer=insurer)

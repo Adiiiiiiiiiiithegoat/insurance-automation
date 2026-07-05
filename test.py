@@ -1,8 +1,5 @@
 from playwright.sync_api import sync_playwright
-from datetime import timedelta, date
-import json
 import os
-import re
 from common import (
     MIC_HOME_URL,
     read_field, parse_tameen_date, compute_period_from, split_plate,
