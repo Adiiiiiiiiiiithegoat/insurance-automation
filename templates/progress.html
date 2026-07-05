@@ -54,6 +54,19 @@
       o.start(); o.stop(ac.currentTime + 0.6);
     } catch(e){}
     try { window.focus(); } catch(e){}
+    // Guaranteed front-and-centre popup — works even if notifications are blocked.
+    // Full-screen overlay, click anywhere to dismiss.
+    try {
+      const ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;flex-direction:column;'
+        + 'align-items:center;justify-content:center;gap:18px;cursor:pointer;text-align:center;padding:24px;'
+        + 'background:' + (isError ? 'rgba(156,42,42,.92)' : 'rgba(15,107,76,.94)') + ';color:#fff';
+      ov.innerHTML = '<div style="font-size:64px">' + (isError ? '❌' : '✅') + '</div>'
+        + '<div style="font-size:30px;font-weight:800;max-width:640px">' + esc(title) + '</div>'
+        + '<div style="font-size:18px;opacity:.9">Click anywhere to dismiss</div>';
+      ov.addEventListener('click', () => ov.remove());
+      document.body.appendChild(ov);
+    } catch(e){}
     try {
       if (window.Notification && Notification.permission === 'granted'){
         const n = new Notification(title, { body: 'Switch to the Policy Automation window.' });
