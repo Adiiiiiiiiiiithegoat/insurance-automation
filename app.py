@@ -1,13 +1,17 @@
 """
-Local web UI that wraps the EXISTING production.py (Muscat Insurance / MIC) flow
-so a non-technical employee drives it by clicking instead of typing in a terminal.
+Local web UI that wraps the EXISTING production.py flow so a non-technical
+employee drives it by clicking instead of typing in a terminal.
+
+Supports TWO insurers, chosen automatically from each Tameen record's company:
+  • Muscat Insurance (MIC) — filled and left as Draft.
+  • New India Assurance    — filled and left at the premium-review step.
 
 ARCHITECTURE (the important part):
   Playwright's SYNC api objects may only be touched by the thread that created
   them. Flask serves on many threads. So ONE dedicated worker thread owns the
-  browser (persistent context + Tameen tab + MIC tab) and is the ONLY thread that
-  ever calls Playwright. Flask routes never touch Playwright — they talk to the
-  worker through thread-safe queues:
+  browser (persistent context + Tameen tab + MIC tab + New India tab) and is the
+  ONLY thread that ever calls Playwright. Flask routes never touch Playwright —
+  they talk to the worker through thread-safe queues:
     command_queue  (Flask  -> worker)  one action + args per item
     result_queue   (worker -> Flask)   request/response payloads (route blocks on get)
     progress_queue (worker -> browser) live MIC-fill events, streamed via SSE
@@ -43,7 +47,7 @@ from playwright.sync_api import sync_playwright
 # PREMIUM_TOLERANCE so we can report the match outcome on screen instead of just
 # printing it). Nothing in common.py is modified.
 from common import (
-    MIC_HOME_URL, PREMIUM_TOLERANCE,
+    MIC_HOME_URL, NI_LOGIN_URL, PREMIUM_TOLERANCE,
     read_field, read_premium, parse_tameen_date, compute_period_from, split_plate,
     expiry_far_off,
     tameen_go_to_payments, tameen_click_payments_by_channel,
@@ -51,6 +55,10 @@ from common import (
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
     mic_get_licence, mic_fill_policy_info, mic_get_vehicle,
     mic_fill_vehicle_info, mic_calculate_and_check, mic_reset_to_home,
+    reformat_plate_for_ni, compute_commencing_date_ni, read_tameen_addons,
+    ni_login_if_needed, ni_go_to_motor_policy,
+    ni_fill_primary_top, ni_fill_primary_client, ni_fill_previous_policy,
+    ni_fill_vehicle_details, ni_fill_premium_calculation, ni_reset_to_motor_policy,
     TAMEEN_CHANNELS, TAMEEN_SECTIONS,
 )
 
@@ -69,8 +77,8 @@ worker_state = {"startup_error": None}
 TAMEEN_DASHBOARD_URL = "https://mis.tameen.om/dashboard"
 
 # What the live progress checklist shows, in order. The worker emits a step event
-# (start/done) per index, matching this list. Index 0 is the Tameen read; 1..8 are
-# the MIC fill helpers.
+# (start/done) per index, matching the chosen insurer's list. Index 0 is the Tameen
+# read; the rest are that insurer's fill helpers (one step per helper).
 MIC_STEPS = [
     "Reading the record from Tameen",
     "Signing in to Muscat Insurance",
@@ -82,6 +90,19 @@ MIC_STEPS = [
     "Filling the vehicle information",
     "Calculating the premium & comparing",
 ]
+NI_STEPS = [
+    "Reading the record from Tameen",
+    "Signing in to New India",
+    "Opening the Motor Policy form",
+    "Filling the primary details",
+    "Filling the client details",
+    "Filling the previous-policy details",
+    "Filling the vehicle details",
+    "Filling the premium calculation",
+]
+
+# Friendly insurer names, keyed by the company code carried on each record row.
+_INSURER_LABELS = {"MIC": "Muscat Insurance", "NEW_INDIA": "New India"}
 
 # Read-only copies of the last results, kept on the Flask side purely so screens
 # can be re-rendered (e.g. "Go back" from the confirm screen) without touching the
@@ -245,11 +266,10 @@ def _click_channel(page, channel, section):
 
 
 def _read_records(page):
-    """Read the Muscat-Insurance rows as DATA. Returns a list of row dicts with
-    keys text/domIdx/cells. (Reading + Muscat filter copied from
-    production.tameen_select_and_click_eye; no prompting.)"""
+    """Read the rows we can process (Muscat Insurance + New India) as DATA. Returns
+    row dicts with keys text/domIdx/cells/company. (Reading + company routing copied
+    from production.tameen_select_and_click_eye; no prompting.)"""
     page.wait_for_timeout(1500)
-    COMPANY_FILTER = "muscat insurance"
     rows_data = page.evaluate("""
         () => {
             function cellsOf(row, cellSel){ return Array.from(row.querySelectorAll(cellSel)); }
@@ -287,15 +307,29 @@ def _read_records(page):
     all_rows = rows_data["rows"]
     company_col_idx = next((i for i, h in enumerate(headers[1:], start=0) if "company" in h.lower()), None)
 
-    def is_muscat(r):
-        if company_col_idx is not None:
-            cell_val = r["cells"][company_col_idx] if company_col_idx < len(r["cells"]) else ""
+    def company_of(r):
+        """'MIC' for Muscat Insurance, 'NEW_INDIA' for New India, else None."""
+        if company_col_idx is not None and company_col_idx < len(r["cells"]):
+            cell_val = r["cells"][company_col_idx]
         else:
             cell_val = r["text"]
-        return COMPANY_FILTER in cell_val.lower()
+        cv = cell_val.lower()
+        if "muscat insurance" in cv:
+            return "MIC"
+        if "new india" in cv:
+            return "NEW_INDIA"
+        return None
 
-    filtered = [r for r in all_rows if is_muscat(r)]
+    filtered = []
+    for r in all_rows:
+        comp = company_of(r)
+        if comp is not None:
+            r["company"] = comp
+            filtered.append(r)
     if not filtered:
+        # Nothing we recognise — show everything so the operator can see the rows.
+        for r in all_rows:
+            r["company"] = company_of(r)
         filtered = all_rows
     return {"headers": headers, "rows": filtered}
 
@@ -393,6 +427,98 @@ def _read_tameen_fields(page, channel_name):
     return prepared, fill
 
 
+def _read_tameen_fields_ni(page, channel_name):
+    """Read every Tameen field and derive the values New India needs.
+    (Reads + derivations copied from production.py's NEW_INDIA per-record block.)"""
+    page.bring_to_front()
+    first_name   = read_field(page, "First Name")
+    last_name    = read_field(page, "Last Name")
+    license_id   = read_field(page, "License ID")
+    product_name = read_field(page, "Product Name")
+    prev_expiry  = read_field(page, "Previous Expiry")
+    vehicle_no   = read_field(page, "Vehicle Number")
+
+    seats_raw = ""
+    for seats_label in ("Seats", "No. of Seats", "No Of Seats",
+                        "Number of Seats", "Seating Capacity", "Seat Capacity"):
+        seats_raw = read_field(page, seats_label)
+        if seats_raw:
+            break
+    seats = "".join(ch for ch in seats_raw if ch.isdigit())
+
+    full_name = (first_name + " " + last_name).strip()
+    expiry_flagged = expiry_far_off(parse_tameen_date(prev_expiry))
+    if expiry_flagged:
+        print(f"⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
+
+    # Policy type source. Mobileapp channel leaves Product Name blank and uses a
+    # dedicated Policy Type field; fall back to it there (or if blank generally).
+    type_source = product_name
+    if not type_source or (channel_name or "").lower() == "mobileapp":
+        for lbl in ("Policy Type", "Policy type", "Cover Type", "Coverage Type"):
+            pt = read_field(page, lbl)
+            if pt:
+                type_source = pt
+                break
+
+    # Extra fields only New India needs. Several labels are guesses — try a few
+    # spellings and keep the first that returns a value.
+    mileage = ""
+    for lbl in ("Mileage Est", "Mileage", "Mileage Estimate", "Odometer"):
+        mileage = read_field(page, lbl)
+        if mileage:
+            break
+    color = ""
+    for lbl in ("Color", "Colour", "Vehicle Color", "Vehicle Colour"):
+        color = read_field(page, lbl)
+        if color:
+            break
+    body_type = ""
+    for lbl in ("Body Type", "Body", "Vehicle Body Type", "Body Style"):
+        body_type = read_field(page, lbl)
+        if body_type:
+            break
+    tameen_make = read_field(page, "Make")
+    tameen_model = ""
+    for lbl in ("Modal", "Model"):   # 'Modal' is Tameen's real (misspelled) label
+        tameen_model = read_field(page, lbl)
+        if tameen_model:
+            break
+    addons = read_tameen_addons(page)
+
+    pn = (type_source or "").lower().replace(" ", "")
+    if "thirdparty" in pn:
+        policy_type = "Third Party"
+    elif "comprehensive" in pn:
+        policy_type = "Comprehensive"
+    else:
+        policy_type = None
+
+    reg_no          = reformat_plate_for_ni(vehicle_no)
+    commencing_date = compute_commencing_date_ni(prev_expiry)
+
+    prepared = {
+        "Product/Type": f"{product_name}  →  {policy_type or '(unknown)'}",
+        "Insured Name": full_name,
+        "License/CivilID": license_id,
+        "Reg.No": f"{reg_no}   (from '{vehicle_no}')",
+        "Commencing": f"{commencing_date}   (from expiry '{prev_expiry}')",
+        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
+        "Seats": seats or "(not read — check the Tameen label)",
+        "Mileage": mileage or "(not read)",
+        "Colour": color or "(not read)",
+        "Body Type": body_type or "(not read)",
+        "Add-ons": addons or "(none read)",
+    }
+    fill = {
+        "policy_type": policy_type, "license_id": license_id, "full_name": full_name,
+        "reg_no": reg_no, "commencing_date": commencing_date, "seats": seats,
+        "mileage": mileage, "color": color, "body_type": body_type,
+        "tameen_make": tameen_make, "tameen_model": tameen_model, "addons": addons,
+    }
+    return prepared, fill
+
+
 def _compare_premium(net_prem, tameen_total):
     """Same numeric comparison as common.mic_calculate_and_check, but RETURNS the
     outcome so the UI can show it (the helper only prints it)."""
@@ -407,28 +533,73 @@ def _compare_premium(net_prem, tameen_total):
         return {"compared": False, "mic": net_prem, "tameen": tameen_total}
 
 
-def _process_record(tameen_page, mic_page, idx, st):
+def _fill_new_india(ni_page, fill, prepared):
+    """Fill the New India form (steps 1..7), streaming a step event per helper.
+    Stops at the premium-review — nothing is saved/submitted. Emits a 'final' event
+    tagged insurer=NEW_INDIA (no premium comparison — New India has none here)."""
+    ni_page.bring_to_front()
+    state = {}
+    steps = [
+        ("NI login check",   lambda: ni_login_if_needed(ni_page)),
+        ("Open Motor Policy", lambda: ni_go_to_motor_policy(ni_page)),
+        ("Primary details",  lambda: ni_fill_primary_top(ni_page, fill["reg_no"], fill["license_id"])),
+        ("Client details",   lambda: ni_fill_primary_client(ni_page, fill["commencing_date"], fill["full_name"])),
+        ("Previous policy",  lambda: state.__setitem__(
+            "bmy", ni_fill_previous_policy(ni_page, fill["mileage"], fill["color"], fill["full_name"]))),
+        ("Vehicle details",  lambda: ni_fill_vehicle_details(
+            ni_page, state["bmy"][0], state["bmy"][1], fill["body_type"], fill["seats"],
+            fill["tameen_make"], fill["tameen_model"])),
+        ("Premium calc",     lambda: ni_fill_premium_calculation(
+            ni_page, fill["policy_type"], fill["seats"], fill["addons"])),
+    ]
+    for i, (name, step) in enumerate(steps, start=1):
+        progress_queue.put({"type": "step", "index": i, "state": "start"})
+        t0 = time.time()
+        try:
+            step()
+        except Exception as e:
+            progress_queue.put({"type": "error", "index": i, "message": str(e),
+                                "record": fill.get("record_text", "")})
+            return
+        print(f"  ⏱  [TIMING] NI step {i} ({name}): {time.time() - t0:.1f}s")
+        progress_queue.put({"type": "step", "index": i, "state": "done"})
+
+    progress_queue.put({"type": "final", "insurer": "NEW_INDIA",
+                        "record": fill.get("record_text", ""), "prepared": prepared})
+
+
+def _process_record(tameen_page, mic_page, ni_page, idx, st):
     """One continuous run, started AFTER the employee confirms the row:
       step 0  — open the row in Tameen and read every field (no clicks needed)
-      steps 1..8 — fill the MIC form
-      then a final event with the premium check + the prepared details.
+      then the chosen insurer's fill steps, one helper per step,
+      then a final event with the prepared details (+ premium check for MIC).
     Any failure becomes an error event (the 'flagged for review' path); the worker
     never crashes."""
+    rec = st["records"][idx]
+    company = rec.get("company") or "MIC"
+    st["last_company"] = company     # so a later 'reset' knows which tab to reset
+
     # ── Step 0: read the record from Tameen ──────────────────────────────────
     run_t0 = time.time()
     progress_queue.put({"type": "step", "index": 0, "state": "start"})
     t0 = time.time()
     try:
-        rec = st["records"][idx]
         tameen_page.bring_to_front()
         _click_record(tameen_page, rec["domIdx"])
-        prepared, fill = _read_tameen_fields(tameen_page, st["channel_name"])
+        if company == "NEW_INDIA":
+            prepared, fill = _read_tameen_fields_ni(tameen_page, st["channel_name"])
+        else:
+            prepared, fill = _read_tameen_fields(tameen_page, st["channel_name"])
         fill["record_text"] = rec["text"]
     except Exception as e:
         progress_queue.put({"type": "error", "index": 0, "message": str(e), "record": ""})
         return
     print(f"  ⏱  [TIMING] Step 0 (read Tameen record): {time.time() - t0:.1f}s")
     progress_queue.put({"type": "step", "index": 0, "state": "done"})
+
+    if company == "NEW_INDIA":
+        _fill_new_india(ni_page, fill, prepared)
+        return
 
     # ── Steps 1..8: fill MIC (one helper per step, before/after events) ──────
     mic_page.bring_to_front()
@@ -462,7 +633,8 @@ def _process_record(tameen_page, mic_page, idx, st):
     # left as DRAFT — no approve/save step.)
     net_prem = read_premium(mic_page, "Net Prem Incl. VAT")
     outcome = _compare_premium(net_prem, fill["tameen_total"])
-    progress_queue.put({"type": "final", "record": fill.get("record_text", ""),
+    progress_queue.put({"type": "final", "insurer": "MIC",
+                        "record": fill.get("record_text", ""),
                         "prepared": prepared, **outcome})
 
 
@@ -558,17 +730,24 @@ def worker_main():
             mic_page = context.new_page()
             mic_page.set_default_timeout(120000)
             _skip_debugger_pauses(mic_page)
-            # Native-dialog auto-accept on BOTH tabs (same as production.py).
+
+            ni_page = context.new_page()
+            ni_page.set_default_timeout(120000)
+            _skip_debugger_pauses(ni_page)
+
+            # Native-dialog auto-accept on every working tab (same as production.py).
             mic_page.on("dialog", lambda d: d.accept())
+            ni_page.on("dialog", lambda d: d.accept())
             tameen_page.on("dialog", lambda d: d.accept())
             # Auto-save Print → Download PDFs to the Downloads folder (no dialog, so
             # the single browser worker never blocks waiting on a Save As window).
             _wire_downloads(context)
             mic_page.goto(MIC_HOME_URL, timeout=60000)
+            ni_page.goto(NI_LOGIN_URL, timeout=60000)
 
             # Show the Tameen tab when the browser opens — that's the one the
-            # employee needs for the login/OTP. (mic_page was navigated last, so
-            # without this the MIC tab would be in front.)
+            # employee needs for the login/OTP. (the insurer tabs were navigated
+            # last, so without this one of them would be in front.)
             tameen_page.bring_to_front()
 
             st = {"channel_name": "", "fill": {}}
@@ -594,8 +773,8 @@ def worker_main():
 
                 if action == "process_record":
                     # No result_queue reply — the page watches the SSE stream while
-                    # this reads Tameen and fills MIC in one continuous run.
-                    _process_record(tameen_page, mic_page, args["index"], st)
+                    # this reads Tameen and fills the chosen insurer in one run.
+                    _process_record(tameen_page, mic_page, ni_page, args["index"], st)
                     continue
 
                 try:
@@ -620,13 +799,18 @@ def worker_main():
 
                     elif action in ("reset", "back_to_channels"):
                         if action == "reset":
-                            # Close policy clutter first: only the Tameen + MIC tabs stay.
-                            _close_extra_tabs(context, (tameen_page, mic_page))
-                            # Guard each tab so one failing doesn't abort the rest.
+                            # Close policy clutter first: only the working tabs stay.
+                            _close_extra_tabs(context, (tameen_page, mic_page, ni_page))
+                            # Reset only the insurer tab we actually used this record
+                            # (default MIC if we never got that far). Guard each so one
+                            # failing doesn't abort the rest.
                             try:
-                                mic_reset_to_home(mic_page)
+                                if st.get("last_company") == "NEW_INDIA":
+                                    ni_reset_to_motor_policy(ni_page)
+                                else:
+                                    mic_reset_to_home(mic_page)
                             except Exception as e:
-                                print(f"  ⚠️  MIC reset issue: {e}")
+                                print(f"  ⚠️  Insurer reset issue: {e}")
                             try:
                                 tameen_reset_to_payments(tameen_page)
                             except Exception as e:
@@ -689,7 +873,10 @@ def _records_for_template(data):
         titles = (titles + [""] * ncol)[:ncol]          # pad/truncate to the widest row
     else:
         titles = [f"Field {i + 1}" for i in range(ncol)]
-    out_rows = [{"index": i, "cells": r["cells"]} for i, r in enumerate(rows)]
+    out_rows = [{"index": i, "cells": r["cells"],
+                 "company": r.get("company"),
+                 "insurer": _INSURER_LABELS.get(r.get("company"), "Other")}
+                for i, r in enumerate(rows)]
     return {"headers": titles, "rows": out_rows}
 
 
@@ -750,7 +937,8 @@ def confirm_row(idx):
     if idx >= len(rows):
         return redirect(url_for("records"))
     pairs = list(zip(ui_cache["records"]["headers"], rows[idx]["cells"]))
-    return render_template("confirm.html", idx=idx, pairs=pairs,
+    insurer = rows[idx].get("insurer") or "Muscat Insurance"
+    return render_template("confirm.html", idx=idx, pairs=pairs, insurer=insurer,
                            channel_name=ui_cache.get("channel_name", ""))
 
 
@@ -760,9 +948,14 @@ def start_processing(idx):
     # progress over SSE. record_text (for the progress header) is rebuilt from the
     # row cells so we don't need a round-trip first.
     rows = ui_cache["records"]["rows"]
-    record_text = "  |  ".join(rows[idx]["cells"]) if idx < len(rows) else ""
+    row = rows[idx] if idx < len(rows) else {}
+    record_text = "  |  ".join(row.get("cells", []))
+    company = row.get("company") or "MIC"
+    steps = NI_STEPS if company == "NEW_INDIA" else MIC_STEPS
+    insurer = _INSURER_LABELS.get(company, "Muscat Insurance")
     command_queue.put({"action": "process_record", "args": {"index": idx}})
-    return render_template("progress.html", steps=MIC_STEPS, record_text=record_text)
+    return render_template("progress.html", steps=steps, record_text=record_text,
+                           insurer=insurer)
 
 
 @app.route("/progress-stream")

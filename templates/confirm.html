@@ -2,10 +2,14 @@
 {% block content %}
 <div class="card">
   <h1>Do you want to start with this one?</h1>
-  {% if channel_name %}<p class="muted">Channel: {{ channel_name }}</p>{% endif %}
+  <p class="muted">
+    {% if insurer %}Insurer: <strong>{{ insurer }}</strong>{% endif %}
+    {% if channel_name %}&nbsp;·&nbsp; Channel: {{ channel_name }}{% endif %}
+  </p>
   <p>This is the record you picked. Click <strong>Yes</strong> and the automation
-     will read its full details from Tameen and fill the entire MIC form on its own
-     — no clicks needed — then ask you to check it.</p>
+     will read its full details from Tameen and fill the entire
+     {{ insurer or 'insurer' }} form on its own — no clicks needed — then ask you
+     to check it.</p>
 
   <div class="kv">
     {% for h, v in pairs %}

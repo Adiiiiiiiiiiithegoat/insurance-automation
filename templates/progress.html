@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card" id="progress-card">
-  <h1>Filling the MIC form…</h1>
+  <h1>Filling the {{ insurer or 'MIC' }} form…</h1>
   {% if record_text %}<p class="muted">Record: {{ record_text }}</p>{% endif %}
   <div class="banner info">You can switch to the other browser window to watch the
     form being filled in real time.</div>
@@ -15,8 +15,9 @@
 
 <div class="card" id="result-card" style="display:none">
   <div id="result-banner"></div>
-  <p>Go and check the MIC form in the other window. When you're happy, click below
-     to reset both tabs and do the next one. <strong>Nothing closes automatically.</strong></p>
+  <p>Go and check the {{ insurer or 'MIC' }} form in the other window. When you're
+     happy, click below to reset the tabs and do the next one.
+     <strong>Nothing closes automatically.</strong></p>
   <form method="post" action="{{ url_for('reset') }}">
     <button class="btn btn-primary" type="submit">Reset &amp; process next ▶</button>
   </form>
@@ -52,7 +53,11 @@
       steps.forEach((_, i) => set(i, 'done'));
       const rec = d.record ? '<p class="muted">Record: ' + esc(d.record) + '</p>' : '';
       let body;
-      if (d.compared && d.match) {
+      if (d.insurer === 'NEW_INDIA') {
+        // New India has no premium comparison here — it stops at the review step.
+        body = '<div class="banner green"><strong>✅ New India form filled — review it '
+          + 'on screen.</strong></div>';
+      } else if (d.compared && d.match) {
         body = '<div class="banner green"><strong>✅ Premiums match.</strong><br>'
           + 'MIC: ' + esc(d.mic) + ' &nbsp; Tameen: ' + esc(d.tameen) + '</div>';
       } else if (d.compared) {

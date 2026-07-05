@@ -2,8 +2,9 @@
 {% block main_class %}wide{% endblock %}
 {% block content %}
 <div class="card">
-  <h1>Muscat Insurance records{% if channel_name %} — {{ channel_name }}{% endif %}</h1>
-  <p class="muted">Click <strong>Open</strong> on a record to read it and prepare the MIC form.</p>
+  <h1>Records{% if channel_name %} — {{ channel_name }}{% endif %}</h1>
+  <p class="muted">Muscat Insurance and New India records are shown. Click
+    <strong>Open</strong> on a record to read it and prepare that insurer's form.</p>
 
   <form method="post" action="{{ url_for('back_to_channels') }}">
     <button class="btn btn-ghost" type="submit">← Back to channels</button>
@@ -15,6 +16,7 @@
       <thead>
         <tr>
           <th>Open</th>
+          <th>Insurer</th>
           {% for h in table.headers %}<th>{{ h|title }}</th>{% endfor %}
         </tr>
       </thead>
@@ -25,6 +27,9 @@
             <form method="post" action="{{ url_for('confirm_row', idx=r.index) }}">
               <button class="btn-open" type="submit">Open ▶</button>
             </form>
+          </td>
+          <td>
+            <span class="badge badge-{{ r.company|lower if r.company else 'other' }}">{{ r.insurer }}</span>
           </td>
           {% for h in table.headers %}
             <td>{{ r.cells[loop.index0] if loop.index0 < r.cells|length else '' }}</td>
