@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Muscat Insurance — Automation{% endblock %}</title>
+  <title>{% block title %}Policy Automation{% endblock %}</title>
   <style>
     /* Palette from ui_assets/BRAND.md */
     :root{
@@ -111,7 +111,7 @@
   <header>
     <img src="{{ url_for('static', filename='logo.png') }}" alt="logo"
          onerror="this.style.display='none'">
-    <span class="title">Muscat Insurance — Policy Automation</span>
+    <span class="title">Policy Automation</span>
   </header>
   <main class="{% block main_class %}{% endblock %}">
     {% block content %}{% endblock %}
