@@ -1,37 +1,48 @@
 """
-NEW INDIA TESTING script — practice runs against PAST records on Tameen's
-APPLICATIONS page (instead of the normal Payments page).
+TESTING script — practice runs against PAST records on Tameen's APPLICATIONS
+page (instead of the normal Payments page). Tests BOTH insurers:
+  • New India Assurance — filled to the premium-review only (nothing submitted).
+  • Muscat Insurance (MIC) — filled to Calculate + premium check (left as Draft).
 
-Why this exists: to build confidence in the New India form-fill by running it
-over lots of old records. Nothing is ever saved or submitted on New India —
-the fill stops at the premium-calculation review, exactly like test.py.
+Why this exists: to build confidence in the form-fill by running it over lots of
+old records and collecting the terminal output for diagnosis.
 
 How to run (from this folder):    python test_ni.py
+  → Log into Tameen once (OTP), press ENTER, then it runs UNATTENDED: it walks
+    every New India + MIC row on the Applications page by itself, printing a
+    PASS/FAIL block per record. Copy the whole terminal at the end for diagnosis.
 
 This script is SEPARATE from the normal journey:
   - production.py / test.py / the control panel are untouched.
-  - Do NOT run this at the same time as test.py or the control panel — they
-    share the same browser profile (automation_profile) and Chromium only
-    allows one window on a profile at a time.
+  - Do NOT run this at the same time as them — they share the browser profile
+    (automation_profile) and Chromium allows one window per profile.
 
-Flow per record:
-  Tameen dashboard → APPLICATIONS tile → New India rows listed → eye icon →
-  read the record's fields → fill the New India form → you review on screen →
-  ENTER here to reset both tabs and move to the next record ('q' quits).
+⚠️  MIC has no dry-run stop: testing a MIC row runs Create → … → Calculate, which
+    leaves a real DRAFT policy on MIC (never confirmed/approved). New India creates
+    nothing. ponytail: MIC's flow has no "stop before create", so a draft is the
+    only way to exercise its fill.
 """
 from playwright.sync_api import sync_playwright
+
+
+class _SkipRecord(Exception):
+    """Raised when a Tameen record is missing data essential to fill the New
+    India form — skipping avoids feeding garbage into the form, which was
+    crashing the browser (e.g. Vehicle Number '-' → invalid Reg.No '/')."""
+
+
 from common import (
+    MIC_HOME_URL, NI_LOGIN_URL,
     read_field, parse_tameen_date, expiry_far_off, enable_download_dialogs,
     tameen_click_dashboard_tile,
-)
-# The New India helpers live in test.py; importing them does NOT start test.py's
-# own browser flow (that part is behind its __main__ guard).
-from test import (
-    NI_LOGIN_URL,
+    compute_period_from, split_plate,
+    mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
+    mic_get_licence, mic_fill_policy_info, mic_get_vehicle,
+    mic_fill_vehicle_info, mic_calculate_and_check, mic_reset_to_home,
+    reformat_plate_for_ni, compute_commencing_date_ni, read_tameen_addons,
     ni_login_if_needed, ni_go_to_motor_policy,
     ni_fill_primary_top, ni_fill_primary_client, ni_fill_previous_policy,
     ni_fill_vehicle_details, ni_fill_premium_calculation, ni_reset_to_motor_policy,
-    reformat_plate_for_ni, compute_commencing_date_ni, read_tameen_addons,
 )
 
 
@@ -39,7 +50,7 @@ from test import (
 #  TAMEEN: the APPLICATIONS table
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Same table-reading JavaScript as test.py's row picker — the Applications page
+# Same table-reading JavaScript as production's row picker — the Applications page
 # uses the same kind of table as the Payments page (company column + eye icon).
 _READ_ROWS_JS = """
     () => {
@@ -104,10 +115,8 @@ def _wait_for_applications_rows(page, timeout_ms=20000) -> None:
     """Poll until the Applications table actually has data rows.
 
     The tile click only waits for 'domcontentloaded' (HTML shell ready); the
-    table itself loads its rows afterwards via an async call. A fixed short
-    sleep here was racing that load and reading an empty table. wait_for_function
-    polls fast in-browser and returns the instant rows exist, so this is no
-    slower than before on a quick load and far more reliable on a slow one.
+    table itself loads its rows afterwards via an async call. wait_for_function
+    polls fast in-browser and returns the instant rows exist.
     """
     try:
         page.wait_for_function(
@@ -120,8 +129,19 @@ def _wait_for_applications_rows(page, timeout_ms=20000) -> None:
         pass  # fall through — the caller raises its own clear error if still empty
 
 
-def _list_ni_rows(page):
-    """Read the Applications table and return only the New India rows."""
+def _company_of(cell_val: str):
+    """'MIC' for a Muscat Insurance row, 'NEW_INDIA' for New India, else None."""
+    cv = (cell_val or "").lower()
+    if "muscat insurance" in cv:
+        return "MIC"
+    if "new india" in cv:
+        return "NEW_INDIA"
+    return None
+
+
+def _list_records(page):
+    """Read the Applications table; return the MIC + New India rows (each tagged
+    with r['company']) and the total row count on the page."""
     _wait_for_applications_rows(page)
     rows_data = page.evaluate(_READ_ROWS_JS)
     if not rows_data or not rows_data.get("rows"):
@@ -131,86 +151,48 @@ def _list_ni_rows(page):
     all_rows = rows_data["rows"]
     company_col_idx = next((i for i, h in enumerate(headers[1:], start=0) if "company" in h.lower()), None)
 
-    ni_rows = []
+    records = []
     for r in all_rows:
         if company_col_idx is not None and company_col_idx < len(r["cells"]):
             cell_val = r["cells"][company_col_idx]
         else:
             cell_val = r["text"]
-        if "new india" in cell_val.lower():
-            ni_rows.append(r)
-    return ni_rows, len(all_rows)
+        comp = _company_of(cell_val)
+        if comp is not None:
+            r["company"] = comp
+            records.append(r)
+    return records, len(all_rows)
 
 
-def tameen_pick_next_ni_record(page, done):
-    """Show the New India rows (marking the ones already tested this run) and
-    open the next untested one. ENTER = open it, a number = open that row
-    instead, 'r' = re-read the table, 'q' = quit.
+def tameen_open_next_record(page, done):
+    """Auto-pick the next untested MIC/New India row and open it (no prompts).
 
-    Returns ("OK", "<row text>") after the record is opened, or ("QUIT", None).
+    Returns ("OK", "<row text>", "MIC"/"NEW_INDIA") after opening the record,
+    or ("DONE", None, None) when every row on the page has been tested.
     """
-    while True:
-        print("\n── Tameen: New India records on the Applications page ──")
-        ni_rows, total = _list_ni_rows(page)
-        if not ni_rows:
-            print(f"  ⚠️  No New India rows found ({total} rows on the page).")
-            if input("  Press ENTER to re-read the table, or 'q' to quit ▶  ").strip().lower() == "q":
-                return "QUIT", None
-            continue
+    records, total = _list_records(page)
+    pending = [r for r in records if r["text"] not in done]
 
-        pending = [r for r in ni_rows if r["text"] not in done]
-        next_row = pending[0] if pending else None
+    print("\n" + "=" * 70)
+    print(f"  RECORDS  ({len(records)} MIC/New India of {total} rows — {len(done)} tested, {len(pending)} left)")
+    print("=" * 70)
 
-        print("\n" + "=" * 70)
-        print(f"  NEW INDIA RECORDS  ({len(ni_rows)} of {total} rows — {len(done)} tested this run)")
-        print("=" * 70)
-        for i, r in enumerate(ni_rows, start=1):
-            if r is next_row:
-                mark = "→ next "
-            elif r["text"] in done:
-                mark = "✓ done "
-            else:
-                mark = "       "
-            print(f"  [{i:>2}] {mark} {r['text'] or '(no text)'}")
-        print("=" * 70)
+    if not pending:
+        return "DONE", None, None
 
-        if next_row is None:
-            print("  🎉  Every New India row on this page has been tested this run.")
-            raw = input("  Type a number to re-test one, 'r' to re-read the table, or 'q' to quit ▶  ").strip().lower()
-        else:
-            raw = input("  ENTER = open the '→ next' row, or a number, 'r' = re-read, 'q' = quit ▶  ").strip().lower()
-
-        if raw == "q":
-            return "QUIT", None
-        if raw == "r":
-            continue
-        if raw == "":
-            selected = next_row
-            if selected is None:
-                continue
-        else:
-            try:
-                choice = int(raw)
-            except ValueError:
-                print("  Please enter a number, ENTER, 'r' or 'q'.")
-                continue
-            if not 1 <= choice <= len(ni_rows):
-                print("  Number out of range.")
-                continue
-            selected = ni_rows[choice - 1]
-
-        print(f"\n  Opening: {selected['text'] or '(no text)'}")
-        result = page.evaluate(_CLICK_EYE_JS, selected["domIdx"])
-        if not result:
-            raise RuntimeError("Could not click the eye icon on that row.")
-        page.wait_for_load_state("domcontentloaded")
-        print("  ✅  Opened record")
-        return "OK", selected["text"]
+    selected = pending[0]
+    tag = "[MIC]      " if selected["company"] == "MIC" else "[New India]"
+    print(f"  → Opening {tag}  {selected['text'] or '(no text)'}")
+    result = page.evaluate(_CLICK_EYE_JS, selected["domIdx"])
+    if not result:
+        raise RuntimeError("Could not click the eye icon on that row.")
+    page.wait_for_load_state("domcontentloaded")
+    print("  ✅  Opened record")
+    return "OK", selected["text"], selected["company"]
 
 
 def _on_applications_table(page) -> bool:
-    """True when the Applications records table is showing: a table header that
-    mentions 'company' plus at least one data row underneath it."""
+    """True when the Applications records table is showing (a 'company' header + rows)."""
     try:
         return page.evaluate("""() => {
             const heads = [...document.querySelectorAll('table thead th, table thead td, [role="columnheader"]')];
@@ -232,15 +214,11 @@ def tameen_reset_to_applications(page) -> None:
 
     Tameen is a single-page app: the eye-icon opens the record via client-side
     routing, so browser Back re-renders the list and reloads its rows ASYNCHRONOUSLY.
-    The old code went Back up to 4× waiting only 800ms each — it read the still-empty
-    table, assumed Back had failed, and kept going Back, overshooting past the
-    dashboard to the login page (where the APPLICATIONS tile no longer exists). Now we
-    go Back ONCE and actually wait for the rows before judging, then fall back to
+    Go Back ONCE and actually wait for the rows before judging, then fall back to
     navigating by URL rather than blindly clicking Back again.
     """
     print("\n── Tameen reset: returning to the Applications page ──")
 
-    # 1) One step Back, then WAIT for the rows to load before deciding.
     try:
         page.go_back(wait_until="domcontentloaded")
     except Exception:
@@ -249,8 +227,6 @@ def tameen_reset_to_applications(page) -> None:
         print("  ✅  Back on the Applications page")
         return
 
-    # 2) Back didn't land us there. Go straight to the Applications URL. The record
-    #    URL carries '&page=dashboard/application', so the list lives at that path.
     origin = "/".join(page.url.split("/")[:3])          # e.g. https://mis.tameen.om
     for url in (f"{origin}/dashboard/application", f"{origin}/dashboard"):
         try:
@@ -261,7 +237,6 @@ def tameen_reset_to_applications(page) -> None:
             print("  ✅  Back on the Applications page")
             return
 
-    # 3) Last resort: from the dashboard, click the tile the normal way.
     try:
         tameen_click_dashboard_tile(page, "APPLICATIONS")
         if _applications_ready(page):
@@ -269,12 +244,11 @@ def tameen_reset_to_applications(page) -> None:
             return
     except Exception:
         pass
-    print("  ⚠️  Could not get back to the Applications page — navigate there by hand,")
-    print("      then continue in this terminal.")
+    print("  ⚠️  Could not get back to the Applications page — navigate there by hand.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MAIN FLOW  (Tameen + New India tabs only)
+#  MAIN FLOW  (Tameen + MIC + New India tabs)
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     with sync_playwright() as p:
@@ -286,7 +260,7 @@ if __name__ == "__main__":
             locale="en-US",
             args=["--lang=en-US"],
             permissions=["clipboard-read", "clipboard-write"],
-            ignore_https_errors=True,
+            ignore_https_errors=True,          # MIC is on :444 with a custom cert
         )
 
         print("Opening Tameen website...")
@@ -294,26 +268,33 @@ if __name__ == "__main__":
         tameen_page.set_default_timeout(120000)
         tameen_page.goto("https://mis.tameen.om/dashboard/login", timeout=60000)
 
+        print("Opening MIC website...")
+        mic_page = context.new_page()
+        mic_page.set_default_timeout(120000)
+
         print("Opening New India website...")
         ni_page = context.new_page()
         ni_page.set_default_timeout(120000)
 
         # Auto-accept native browser dialogs (e.g. beforeunload "Leave site?").
         tameen_page.on("dialog", lambda dialog: dialog.accept())
+        mic_page.on("dialog", lambda dialog: dialog.accept())
         ni_page.on("dialog", lambda dialog: dialog.accept())
         enable_download_dialogs(context)
 
+        mic_page.goto(MIC_HOME_URL, timeout=60000)
         ni_page.goto(NI_LOGIN_URL, timeout=60000)
         tameen_page.bring_to_front()
 
-        done = set()   # row texts already tested this run
+        done    = set()   # row texts already tested this run
+        results = []      # (company, record_text, "PASS"/reason) for the final summary
 
         try:
             print("\n" + "=" * 60)
-            print("⏸  ACTION REQUIRED")
+            print("⏸  ACTION REQUIRED (one time)")
             print("  1. Switch to the Tameen tab")
             print("  2. Log in and complete the OTP")
-            print("  3. Come back here and press ENTER")
+            print("  3. Come back here and press ENTER — then it runs UNATTENDED")
             print("=" * 60)
             input("\nPress ENTER once you are logged in to Tameen ▶  ")
 
@@ -322,22 +303,28 @@ if __name__ == "__main__":
             tameen_click_dashboard_tile(tameen_page, "APPLICATIONS")
 
             # ══════════════════════════════════════════════════════════════════
-            #  PER-RECORD TESTING LOOP
+            #  PER-RECORD TESTING LOOP — fully automatic, no prompts
             # ══════════════════════════════════════════════════════════════════
             while True:
                 record_text = None
                 prepared    = None
+                company     = None
 
                 try:
                     # read_field reads via the clipboard, which needs this tab in front.
                     tameen_page.bring_to_front()
 
-                    status, record_text = tameen_pick_next_ni_record(tameen_page, done)
-                    if status == "QUIT":
+                    status, record_text, company = tameen_open_next_record(tameen_page, done)
+                    if status == "DONE":
+                        print("\n🎉  Every MIC + New India row on this page has been tested.")
                         break
                     done.add(record_text)
 
-                    # ── TAMEEN: read the record's fields (same as test.py) ──────
+                    print("\n" + "#" * 70)
+                    print(f"#  TEST {len(done)}  —  [{company}]  {record_text or '(no text)'}")
+                    print("#" * 70)
+
+                    # ── TAMEEN: read the fields BOTH insurers need ──────────────
                     print("\nReading data from Tameen record...")
                     first_name   = read_field(tameen_page, "First Name")
                     last_name    = read_field(tameen_page, "Last Name")
@@ -356,8 +343,8 @@ if __name__ == "__main__":
 
                     full_name = (first_name + " " + last_name).strip()
 
-                    # Policy type: from Product Name; if that's blank on this record
-                    # (like the Mobileapp channel), fall back to a Policy Type field.
+                    # Policy type: from Product Name; if blank (e.g. Mobileapp), fall
+                    # back to a Policy Type field.
                     type_source = product_name
                     if not type_source:
                         for lbl in ("Policy Type", "Policy type", "Cover Type", "Coverage Type"):
@@ -371,112 +358,142 @@ if __name__ == "__main__":
                     if expiry_flagged:
                         print(f"\n⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
 
-                    # ── extra fields New India needs ────────────────────────────
-                    mileage = ""
-                    for lbl in ("Mileage Est", "Mileage", "Mileage Estimate", "Odometer"):
-                        mileage = read_field(tameen_page, lbl)
-                        if mileage:
-                            break
-                    color = ""
-                    for lbl in ("Color", "Colour", "Vehicle Color", "Vehicle Colour"):
-                        color = read_field(tameen_page, lbl)
-                        if color:
-                            break
-                    body_type = ""
-                    for lbl in ("Body Type", "Body", "Vehicle Body Type", "Body Style"):
-                        body_type = read_field(tameen_page, lbl)
-                        if body_type:
-                            break
-                    tameen_make = read_field(tameen_page, "Make")
-                    tameen_model = ""
-                    for lbl in ("Modal", "Model"):   # 'Modal' is Tameen's real (misspelled) label
-                        tameen_model = read_field(tameen_page, lbl)
-                        if tameen_model:
-                            break
-                    addons = read_tameen_addons(tameen_page)
+                    # ══════════════════════════════════════════════════════════
+                    #  ROUTE TO THE RIGHT INSURER
+                    # ══════════════════════════════════════════════════════════
+                    if company == "MIC":
+                        sum_insured  = read_field(tameen_page, "Sum Insured")
+                        tameen_total = read_field(tameen_page, "Total Premium")
+                        period_from  = compute_period_from(parse_tameen_date(prev_expiry))
+                        plate_code, plate_number = split_plate(vehicle_no)
 
-                    pn = (type_source or "").lower().replace(" ", "")
-                    if "thirdparty" in pn:
-                        policy_type = "Third Party"
-                    elif "comprehensive" in pn:
-                        policy_type = "Comprehensive"
-                    else:
-                        policy_type = None
-                        print(f"  ⚠️  Could not tell policy type from '{type_source}' — "
-                              "Coverage Type will be left for you to pick.")
+                        prepared = {
+                            "Product Name"  : product_name,
+                            "Insured Name"  : full_name,
+                            "License No"    : license_id,
+                            "Period From"   : f"{period_from}   (from expiry '{prev_expiry}')",
+                            **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
+                            "Plate"         : f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
+                            "Seats"         : seats or "(not read — check the Tameen label)",
+                            "Sum Insured"   : sum_insured,
+                            "Tameen Premium": tameen_total,
+                        }
+                        print("\n📋  VALUES PREPARED FOR MIC")
+                        for label, value in prepared.items():
+                            print(f"  {label:<14}: {value}")
 
-                    reg_no          = reformat_plate_for_ni(vehicle_no)
-                    commencing_date = compute_commencing_date_ni(prev_expiry)
+                        # ── MIC: fill (left as Draft — not approved) ──
+                        mic_page.bring_to_front()
+                        mic_login_if_needed(mic_page)                                   # step 0
+                        mic_open_policy_create(mic_page)                                # steps 1–2
+                        is_comprehensive = mic_choose_policy_type_and_create(mic_page, type_source)  # steps 3–4
+                        mic_get_licence(mic_page, license_id)                          # steps 5–6
+                        mic_fill_policy_info(mic_page, full_name, period_from)         # steps 7–12
+                        mic_get_vehicle(mic_page, plate_number, plate_code)           # steps 13–15
+                        mic_fill_vehicle_info(mic_page, is_comprehensive, sum_insured, seats)  # steps 16–19
+                        mic_calculate_and_check(mic_page, tameen_total)               # steps 20–22
 
-                    prepared = {
-                        "Product/Type"  : f"{product_name}  →  {policy_type or '(unknown)'}",
-                        "Insured Name"  : full_name,
-                        "License/CivilID": license_id,
-                        "Reg.No"        : f"{reg_no}   (from '{vehicle_no}')",
-                        "Commencing"    : f"{commencing_date}   (from expiry '{prev_expiry}')",
-                        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
-                        "Seats"         : seats or "(not read — check the Tameen label)",
-                        "Mileage"       : mileage or "(not read)",
-                        "Colour"        : color or "(not read)",
-                        "Body Type"     : body_type or "(not read)",
-                        "Add-ons"       : addons or "(none read)",
-                    }
+                    else:  # company == "NEW_INDIA"
+                        if not any(ch.isalnum() for ch in (vehicle_no or "")):
+                            raise _SkipRecord(
+                                f"no usable Vehicle Number on this Tameen record "
+                                f"(read as '{vehicle_no}')")
+
+                        mileage = ""
+                        for lbl in ("Mileage Est", "Mileage", "Mileage Estimate", "Odometer"):
+                            mileage = read_field(tameen_page, lbl)
+                            if mileage:
+                                break
+                        color = ""
+                        for lbl in ("Color", "Colour", "Vehicle Color", "Vehicle Colour"):
+                            color = read_field(tameen_page, lbl)
+                            if color:
+                                break
+                        body_type = ""
+                        for lbl in ("Body Type", "Body", "Vehicle Body Type", "Body Style"):
+                            body_type = read_field(tameen_page, lbl)
+                            if body_type:
+                                break
+                        tameen_make = read_field(tameen_page, "Make")
+                        tameen_model = ""
+                        for lbl in ("Modal", "Model"):   # 'Modal' is Tameen's real (misspelled) label
+                            tameen_model = read_field(tameen_page, lbl)
+                            if tameen_model:
+                                break
+                        addons = read_tameen_addons(tameen_page)
+
+                        pn = (type_source or "").lower().replace(" ", "")
+                        if "thirdparty" in pn:
+                            policy_type = "Third Party"
+                        elif "comprehensive" in pn:
+                            policy_type = "Comprehensive"
+                        else:
+                            policy_type = None
+                            print(f"  ⚠️  Could not tell policy type from '{type_source}' — "
+                                  "Coverage Type will be left for you to pick.")
+
+                        reg_no          = reformat_plate_for_ni(vehicle_no)
+                        commencing_date = compute_commencing_date_ni(prev_expiry)
+
+                        prepared = {
+                            "Product/Type"  : f"{product_name}  →  {policy_type or '(unknown)'}",
+                            "Insured Name"  : full_name,
+                            "License/CivilID": license_id,
+                            "Reg.No"        : f"{reg_no}   (from '{vehicle_no}')",
+                            "Commencing"    : f"{commencing_date}   (from expiry '{prev_expiry}')",
+                            **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
+                            "Seats"         : seats or "(not read — check the Tameen label)",
+                            "Mileage"       : mileage or "(not read)",
+                            "Colour"        : color or "(not read)",
+                            "Body Type"     : body_type or "(not read)",
+                            "Add-ons"       : addons or "(none read)",
+                        }
+                        print("\n📋  VALUES PREPARED FOR NEW INDIA")
+                        for label, value in prepared.items():
+                            print(f"  {label:<16}: {value}")
+
+                        # ── NEW INDIA: fill (stops at review — no submit) ──
+                        ni_page.bring_to_front()
+                        ni_login_if_needed(ni_page)
+                        ni_go_to_motor_policy(ni_page)
+                        ni_fill_primary_top(ni_page, reg_no, license_id)
+                        ni_fill_primary_client(ni_page, commencing_date, full_name)
+                        brand, model, year = ni_fill_previous_policy(ni_page, mileage, color, full_name)
+                        ni_fill_vehicle_details(ni_page, brand, model, body_type, seats,
+                                                tameen_make, tameen_model)
+                        ni_fill_premium_calculation(ni_page, policy_type, seats, addons)
+
+                    results.append((company, record_text, "PASS"))
                     print("\n" + "=" * 60)
-                    print("📋  VALUES PREPARED FOR NEW INDIA (TEST RUN)")
-                    print("=" * 60)
-                    for label, value in prepared.items():
-                        print(f"  {label:<16}: {value}")
+                    print(f"✅  TEST {len(done)} PASS  —  [{company}]  {record_text or ''}")
                     print("=" * 60)
 
-                    # ── NEW INDIA: fill the form (stops at review — no submit) ──
-                    ni_page.bring_to_front()
-                    ni_login_if_needed(ni_page)
-                    ni_go_to_motor_policy(ni_page)
-                    ni_fill_primary_top(ni_page, reg_no, license_id)
-                    ni_fill_primary_client(ni_page, commencing_date, full_name)
-                    brand, model, year = ni_fill_previous_policy(ni_page, mileage, color, full_name)
-                    ni_fill_vehicle_details(ni_page, brand, model, body_type, seats,
-                                            tameen_make, tameen_model)
-                    ni_fill_premium_calculation(ni_page, policy_type, seats, addons)
-                    # Intentionally STOPS here — nothing is saved/submitted.
-
+                except _SkipRecord as e:
+                    results.append((company or "?", record_text, f"SKIP: {e}"))
                     print("\n" + "=" * 60)
-                    print("✅  NEW INDIA FORM FILLED — review on screen.")
-                    if record_text:
-                        print(f"   Record: {record_text}")
+                    print(f"⏭️  TEST {len(done)} SKIP  —  [{company or '?'}]  {record_text or ''}")
+                    print(f"  Reason: {e}")
                     print("=" * 60)
-
-                    ans = input("\nReview the result. Press ENTER to reset the tabs and "
-                                "test the next record, or type 'q' then ENTER to finish ▶  ")
-                    if ans.strip().lower() == "q":
-                        break
 
                 except Exception as e:
+                    results.append((company or "?", record_text, f"FAIL: {e}"))
                     print("\n" + "=" * 60)
-                    print("❌  THIS TEST RECORD HIT A PROBLEM")
+                    print(f"❌  TEST {len(done)} FAIL  —  [{company or '?'}]  {record_text or ''}")
                     print("=" * 60)
                     print(f"  Reason: {e}")
-                    print("-" * 60)
-                    if record_text:
-                        print(f"  Tameen record : {record_text}")
                     if prepared:
                         print("  Details prepared so far:")
                         for label, value in prepared.items():
                             print(f"    {label:<14}: {value}")
                     else:
                         print("  (Failed before the record's details could be read.)")
-                    print("-" * 60)
-                    print("  → Note what went wrong (this is exactly what testing is for),")
-                    print("    then continue to the next record.")
                     print("=" * 60)
 
-                    ans = input("\nPress ENTER to reset the tabs and continue, "
-                                "or type 'q' then ENTER to finish ▶  ")
-                    if ans.strip().lower() == "q":
-                        break
-
-                # Reset both tabs for the next record.
-                ni_reset_to_motor_policy(ni_page)
+                # Reset the insurer tab we used + Tameen, then straight to the next.
+                if company == "NEW_INDIA":
+                    ni_reset_to_motor_policy(ni_page)
+                elif company == "MIC":
+                    mic_reset_to_home(mic_page)
                 tameen_reset_to_applications(tameen_page)
 
         except Exception as e:
@@ -485,10 +502,17 @@ if __name__ == "__main__":
             print("=" * 60)
 
         finally:
-            if done:
-                print(f"\nTested this run ({len(done)} record{'s' if len(done) != 1 else ''}):")
-                for t in done:
-                    print(f"  • {t}")
+            if results:
+                passed = sum(1 for *_, r in results if r == "PASS")
+                print("\n" + "=" * 70)
+                print(f"RUN SUMMARY — {passed}/{len(results)} passed")
+                print("=" * 70)
+                for comp, txt, res in results:
+                    mark = "✅" if res == "PASS" else ("⏭️" if res.startswith("SKIP") else "❌")
+                    print(f"  {mark} [{comp}] {txt or '(no text)'}")
+                    if res != "PASS":
+                        print(f"       {res}")
+                print("=" * 70)
             input("\nPress ENTER in this terminal to close the browser when you're done ▶  ")
             context.close()
             print("Browser closed.")

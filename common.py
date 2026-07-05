@@ -340,8 +340,12 @@ def wait_for_apex(page, settle_ms: int = 700) -> None:
     page.wait_for_timeout(settle_ms)
 
 
-def mic_fill_by_label(page, label: str, value: str, press_enter: bool = False) -> bool:
-    """Fill an APEX input found by its visible label (with XPath fallbacks)."""
+def mic_fill_by_label(page, label: str, value: str, press_enter: bool = False,
+                       attempts: int = 3) -> bool:
+    """Fill an APEX input found by its visible label (with XPath fallbacks).
+    Retries the whole getter list a few times — a field can be briefly absent
+    right after a postback from the previous step (e.g. Plate No re-rendering
+    after Mulkiya Type), which used to fail this on the first try."""
     getters = [
         lambda: page.get_by_label(label, exact=False).first,
         lambda: page.locator(
@@ -351,20 +355,23 @@ def mic_fill_by_label(page, label: str, value: str, press_enter: bool = False) -
             f'xpath=//label[contains(normalize-space(.), "{label}")]/following::textarea[1]'
         ).first,
     ]
-    for g in getters:
-        try:
-            el = g()
-            el.scroll_into_view_if_needed()
-            el.click()
-            el.press("Control+a")
-            el.press("Backspace")
-            el.type(value, delay=20)
-            if press_enter:
-                el.press("Enter")
-            print(f"  ✅  Filled '{label}' = {value}")
-            return True
-        except Exception:
-            continue
+    for attempt in range(attempts):
+        for g in getters:
+            try:
+                el = g()
+                el.scroll_into_view_if_needed()
+                el.click()
+                el.press("Control+a")
+                el.press("Backspace")
+                el.type(value, delay=20)
+                if press_enter:
+                    el.press("Enter")
+                print(f"  ✅  Filled '{label}' = {value}")
+                return True
+            except Exception:
+                continue
+        if attempt < attempts - 1:
+            page.wait_for_timeout(1500)                # field may still be re-rendering
     print(f"  ⚠️  Could not fill '{label}'")
     return False
 
@@ -673,54 +680,57 @@ def mic_set_cust_code(page) -> bool:
             print("  ⚠️  could not find the Cust Code field")
             return False
 
-    # type the value + Enter
-    try:
-        field.scroll_into_view_if_needed(timeout=10000)
-        field.click()
-        field.press("Control+a")
-        field.press("Backspace")
-        field.type(want, delay=40)
-        page.wait_for_timeout(500)
-        field.press("Enter")
-        page.wait_for_timeout(1200)
-    except Exception as e:
-        print(f"  ⚠️  could not type into Cust Code: {e}")
-        return False
+    # type the value + Enter — retried, because a value that doesn't stick on the
+    # first pass (silently swallowed by the popup timing) used to be reported as a
+    # warning and left as-is, letting the wrong/blank customer code through.
+    for attempt in range(3):
+        try:
+            field.scroll_into_view_if_needed(timeout=10000)
+            field.click()
+            field.press("Control+a")
+            field.press("Backspace")
+            field.type(want, delay=40)
+            page.wait_for_timeout(500)
+            field.press("Enter")
+            page.wait_for_timeout(1200)
+        except Exception as e:
+            print(f"  ⚠️  could not type into Cust Code: {e}")
+            continue
 
-    # if a selection popup/menu appeared, click the exact 21252 row
-    try:
-        dialog = page.locator('.ui-dialog:visible, [role="dialog"]:visible').last
-        if dialog.is_visible(timeout=5000):
-            idx = dialog.evaluate("""(d, want) => {
-                const rows = [...d.querySelectorAll('tr')];
-                for (let i = 0; i < rows.length; i++) {
-                    const cells = [...rows[i].querySelectorAll('td')];
-                    if (cells.some(c => c.innerText.trim() === want)) return i;
-                }
-                return -1;
-            }""", want)
-            if idx is not None and idx >= 0:
-                row = dialog.locator('tr').nth(idx)
-                link = row.locator('a')
-                (link.first if link.count() > 0 else row.locator('td').first).click(timeout=20000)
-                page.wait_for_timeout(600)
-    except Exception:
-        pass
+        # if a selection popup/menu appeared, click the exact 21252 row
+        try:
+            dialog = page.locator('.ui-dialog:visible, [role="dialog"]:visible').last
+            if dialog.is_visible(timeout=5000):
+                idx = dialog.evaluate("""(d, want) => {
+                    const rows = [...d.querySelectorAll('tr')];
+                    for (let i = 0; i < rows.length; i++) {
+                        const cells = [...rows[i].querySelectorAll('td')];
+                        if (cells.some(c => c.innerText.trim() === want)) return i;
+                    }
+                    return -1;
+                }""", want)
+                if idx is not None and idx >= 0:
+                    row = dialog.locator('tr').nth(idx)
+                    link = row.locator('a')
+                    (link.first if link.count() > 0 else row.locator('td').first).click(timeout=20000)
+                    page.wait_for_timeout(600)
+        except Exception:
+            pass
 
-    page.keyboard.press("Escape")   # close any leftover menu
-    page.wait_for_timeout(400)
+        page.keyboard.press("Escape")   # close any leftover menu
+        page.wait_for_timeout(400)
 
-    # verify the field now holds 21252
-    try:
-        current = (field.input_value() or "").strip()
-    except Exception:
-        current = ""
-    if want in current:
-        print(f"  ✅  Cust Code confirmed = {current}")
-        return True
-    else:
-        print(f"  ⚠️  Cust Code may not be set (field shows '{current}') — please check")
-        return False
+        # verify the field now holds 21252
+        try:
+            current = (field.input_value() or "").strip()
+        except Exception:
+            current = ""
+        if want in current:
+            print(f"  ✅  Cust Code confirmed = {current}")
+            return True
+
+    print(f"  ⚠️  Cust Code may not be set (field shows '{current}') — please check")
+    return False
 
 
 def read_premium(page, label: str) -> str:
@@ -2492,7 +2502,15 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
         print("  ⚠️  No Brand was read from New India — Make/Model left for you to pick.")
 
     if model:
-        ni_select_contains(page, "Model", [model])
+        picked = ni_select_contains(page, "Model", [model])
+        if not picked and brand:
+            # Some Makes list themselves as their own single generic Model entry
+            # (e.g. 'GREAT WALL' has no real models, just 'GREAT WALL' itself).
+            # Try that before giving up and leaving it for manual entry.
+            picked = ni_select_contains(page, "Model", [brand])
+            if picked:
+                print(f"  ℹ️  No '{model}' option existed — used the generic "
+                      f"'{brand}' Model entry instead.")
         # Selecting a real Model can trigger another reload (same as Make → Model)
         # that briefly removes/rebuilds the rest of the tab — wait for the Body
         # Type dropdown to actually exist again before touching it.
@@ -2704,7 +2722,7 @@ def _ni_addon_locator(page, suffix):
     return None
 
 
-def ni_set_addon(page, which, label, tries: int = 12) -> bool:
+def ni_set_addon(page, which, label, tries: int = 20) -> bool:
     """Guarantee an add-on checkbox ends up TICKED, targeting it by exact id and using
     a real trusted click. The loop condition is the box's ACTUAL checked state, so a
     success means it is genuinely on — retried to survive the U.A.E. postback."""
@@ -2712,7 +2730,7 @@ def ni_set_addon(page, which, label, tries: int = 12) -> bool:
     for _ in range(tries):
         loc = _ni_addon_locator(page, suffix)
         if loc is None:
-            page.wait_for_timeout(400)                 # not rendered yet
+            page.wait_for_timeout(600)                 # not rendered yet
             continue
         try:
             if loc.is_checked():
