@@ -497,11 +497,14 @@ _NI_FUZZY_JS = """
         const {labels, kind} = args;
         const NORM = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
         const targets = labels.map(NORM).filter(Boolean);
+        // Match only when the label's own text EQUALS or CONTAINS a candidate
+        // (forward only, candidate >= 4 chars). The old reverse-containment let a
+        // stray 'Type' label bind to the wrong control — that is what mis-filled
+        // Coverage/Seating, so it is gone.
         const hit = own => {
             const o = NORM(own);
             if (!o) return false;
-            return targets.some(t => o === t ||
-                (t.length >= 3 && o.includes(t)) || (o.length >= 3 && t.includes(o)));
+            return targets.some(t => o === t || (t.length >= 4 && o.includes(t)));
         };
         const tags = ['td','th','label','span','div','b','strong','font','p','a','li'];
         const labs = [];
@@ -1323,40 +1326,205 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
                   "vehicle's value is higher, switch to the '15001-50000' option by hand.")
 
 
+# The Premium Calculation section is crowded with look-alike controls (a Gender
+# dropdown, several number boxes, several checkboxes) and may live in a different
+# frame/tab than the earlier fields. Two prior approaches (label-position, then
+# option/id identity) each missed, so this one is EVIDENCE-BASED: it labels every
+# control by the text of the table cell IMMEDIATELY BEFORE it (New India's real
+# layout — 'label td' then 'control td'), which does not bleed across columns the
+# way visual/position matching did. It also returns a full structural DUMP so we can
+# see exactly what is on the page instead of guessing. Runs in ONE frame; the Python
+# caller runs it across every frame of every tab and keeps the frame that matched.
+_NI_SCAN_JS = r"""
+    () => {
+        const NORM = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const SHOW = s => (s || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+        const vis  = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+
+        // Label = text of the nearest non-empty cell/sibling BEFORE the control.
+        const labelOf = el => {
+            const td = el.closest('td');
+            if (td) {
+                let prev = td.previousElementSibling;
+                while (prev && !prev.innerText.trim()) prev = prev.previousElementSibling;
+                if (prev && prev.innerText.trim()) return prev.innerText;
+                if (td.innerText.trim()) return td.innerText;         // label shares the cell
+            }
+            let p = el.previousElementSibling;
+            while (p && !p.innerText.trim()) p = p.previousElementSibling;
+            if (p && p.innerText.trim()) return p.innerText;
+            if (el.id) { const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]'); if (l) return l.innerText; }
+            return el.parentElement ? el.parentElement.innerText : '';
+        };
+
+        const selects = [...document.querySelectorAll('select')];
+        const inputs  = [...document.querySelectorAll('input')].filter(i => {
+            const t = (i.getAttribute('type') || 'text').toLowerCase();
+            return !['hidden','button','submit','image','file','reset'].includes(t);
+        });
+
+        // COVERAGE: a <select> whose label OR options mention coverage/third party.
+        const coverage = selects.find(s => {
+            const lbl = NORM(labelOf(s));
+            if (lbl.includes('COVERAGE') || lbl.includes('COVERTYPE')) return true;
+            return [...s.options].some(o => {
+                const t = NORM(o.textContent);
+                return t.includes('THIRDPARTY') || t.includes('COMPREHENSIVE') || t.includes('PACOVER');
+            });
+        }) || null;
+
+        // SEATING: a text/number input whose label OR id/name mentions seat/capacity.
+        const seating = inputs.find(i => {
+            const t = (i.getAttribute('type') || 'text').toLowerCase();
+            if (t === 'checkbox' || t === 'radio') return false;
+            const key = NORM(labelOf(i) + ' ' + (i.id || '') + ' ' + (i.name || ''));
+            return key.includes('SEAT') || key.includes('CAPACITY');
+        }) || null;
+
+        // CHECKBOXES: label mentions UAE / road assistance.
+        const cbs = inputs.filter(i => (i.getAttribute('type') || '').toLowerCase() === 'checkbox');
+        let uae = null, road = null;
+        for (const cb of cbs) {
+            const t = NORM(labelOf(cb) + ' ' + (cb.id || '') + ' ' + (cb.name || ''));
+            if (!uae && t.includes('UAE')) uae = cb;
+            if (!road && (t.includes('ROADASSIST') || t.includes('ROADSIDE'))) road = cb;   // not bare 'ERA'
+        }
+
+        // DUMP: compact, human-readable list of what is actually here.
+        const dump = [];
+        selects.forEach(s => dump.push('SELECT [' + SHOW(labelOf(s)) + '] id=' + (s.id || '-') +
+            ' opts={' + [...s.options].slice(0, 5).map(o => SHOW(o.textContent)).join(' / ') + '}'));
+        inputs.forEach(i => {
+            const t = (i.getAttribute('type') || 'text').toLowerCase();
+            if (!vis(i)) return;
+            dump.push((t === 'checkbox' ? 'CHECK ' : 'INPUT ') + '[' + SHOW(labelOf(i)) + '] id=' +
+                (i.id || '-') + ' name=' + (i.name || '-') + (t !== 'checkbox' && t !== 'text' ? ' type=' + t : ''));
+        });
+
+        return {
+            coverage, seating, uae, road,
+            found: !!(coverage || seating || uae || road),
+            note: 'Coverage:' + (coverage ? 'found' : 'MISSING') +
+                  ' Seating:' + (seating ? 'found' : 'MISSING') +
+                  ' UAE:' + (uae ? 'found' : 'MISSING') +
+                  ' Road:' + (road ? 'found' : 'MISSING'),
+            dump,
+        };
+    }
+"""
+
+
+def _ni_all_frames(page):
+    """Every frame in every open tab, with the known form frame FIRST — the Premium
+    section may not be in the same frame as the earlier fields."""
+    frames = []
+    scope = _ni_scope(page)                 # the frame that holds the form (markers)
+    if scope is not None:
+        frames.append(scope)
+    try:
+        for pg in page.context.pages:
+            for fr in pg.frames:
+                if fr not in frames:
+                    frames.append(fr)
+    except Exception:
+        pass
+    return frames or [page]
+
+
+def _ni_premium_controls(page, quiet: bool = False):
+    """Locate the Premium-section controls across ALL frames/tabs and return element
+    handles (coverage/seating/uae/road, any may be None). Prints a structural dump of
+    the form when something is missing, so the real control names are visible. Re-scan
+    (not reuse) before each action — a New India postback rebuilds these elements."""
+    out = {"coverage": None, "seating": None, "uae": None, "road": None}
+    best_note, best_dump = None, None
+    for fr in _ni_all_frames(page):
+        try:
+            h = fr.evaluate_handle(_NI_SCAN_JS)
+        except Exception:
+            continue
+        try:
+            if not h.get_property("found").json_value():
+                # keep the FIRST non-empty dump — frames are ordered form-frame first,
+                # so this shows the New India form, not a Tameen frame.
+                dump = h.get_property("dump").json_value() or []
+                if dump and best_dump is None:
+                    best_dump = dump
+                    best_note = h.get_property("note").json_value()
+                continue
+            for k in out:
+                out[k] = h.get_property(k).as_element()
+            best_note = h.get_property("note").json_value()
+            best_dump = h.get_property("dump").json_value() or []
+            break
+        except Exception:
+            continue
+
+    if not quiet:
+        print(f"  🔎  Premium controls — {best_note or 'no form frame found'}")
+        # If any of the four is missing, show what IS on the page so we can target it.
+        if best_dump and not all(out.values()):
+            print("  ── form controls found on the page (label / id / name) ──")
+            for line in best_dump:
+                print(f"       {line}")
+            print("  ──────────────────────────────────────────────────────────")
+    return out
+
+
 def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> None:
     """Steps 34–37 (Premium Calculation section): Coverage Type, Seating capacity,
     and the two optional add-on checkboxes (UAE Extension, Roadside Assistance).
     STOPS here — does NOT press Premium Calculator / Save / Print / anything."""
     print("\n── New India: Premium Calculation (final fields) ──")
 
-    # This section sits at the BOTTOM of the Vehicle Details tab (Seating Capacity,
-    # U.A.E. Extension, Road Assistance / ERA / IMC, etc.). It is already visible —
-    # we do NOT click the 'Premium Calculator' button (that is a submit/action
-    # button and must never be pressed here). Coverage Type may not exist on every
-    # layout, so if we can't find it we just warn and move on.
+    # These controls live at the BOTTOM of the Vehicle Details tab. We do NOT click
+    # 'Premium Calculator' (a submit button — never pressed here). Each control is
+    # located by IDENTITY (option contents / id-name / adjacent text), NOT by label
+    # position, because label matching kept binding to the wrong look-alike control.
+    ctrls = _ni_premium_controls(page)
 
-    # Coverage Type — only the Third Party branch is defined for now. We match on a
-    # few distinctive words because the real option uses '&' ("Third Party with PA
-    # Cover to Driver & Family"), so matching the whole phrase with 'and' would miss.
-    cov_alt = ["Cover Type", "Coverage", "Type of Cover", "Cover"]
-    if policy_type == "Third Party":
-        ni_select_contains(page, "Coverage Type", ["Third Party", "PA Cover", "Driver"],
-                           alt_labels=cov_alt)
+    # Coverage Type — the <select> whose options mention Third Party / Comprehensive.
+    cov = ctrls["coverage"]
+    if cov is None:
+        print("  ⚠️  Could not find the Coverage Type dropdown — please pick it by hand.")
+    elif policy_type == "Third Party":
+        # The real option reads e.g. 'Third Party with PA Cover to Driver & Family'.
+        want = ["THIRDPARTY", "PACOVER", "DRIVER"]
+        opts = _sel_option_texts(cov)
+        chosen = next((o for o in opts if all(w in re.sub(r"[^A-Z0-9]", "", o.upper()) for w in want)), None)
+        if chosen:
+            try:
+                cov.select_option(label=chosen)
+                print(f"  ✅  Selected Coverage Type = {chosen}")
+                ni_settle(page)
+            except Exception:
+                print(f"  ⚠️  Found Coverage option '{chosen}' but could not select it — pick it by hand.")
+        else:
+            print(f"  ⚠️  No Third-Party coverage option found — pick it by hand. Options: {opts}")
     elif policy_type == "Comprehensive":
         print("  ⚠️  Comprehensive Coverage Type is not defined yet — please pick it by hand.")
     else:
         print(f"  ⚠️  Unknown policy type '{policy_type}' — please pick Coverage Type by hand.")
 
-    # Seating Capacity — try the text box first; if that layout uses a dropdown
-    # instead, fall back to picking the matching option.
-    seat_alt = ["Seating capacity", "Seat Capacity", "No. of Seats", "Number of Seats", "No Of Seats", "Seats"]
-    if seats:
-        if not ni_fill_by_label(page, "Seating Capacity", seats, alt_labels=seat_alt):
-            ni_select_contains(page, "Seating Capacity", [seats], alt_labels=seat_alt)
-    else:
+    # Seating Capacity — the input whose id/name says 'seat'/'capacity'. NEVER a
+    # blind label-following write (that is what put '5' into a random box before).
+    # Re-scan: selecting Coverage above may have triggered a postback.
+    ctrls = _ni_premium_controls(page, quiet=True)
+    if not seats:
         print("  ⚠️  No seats value to put in Seating Capacity — please set it by hand.")
+    elif ctrls["seating"] is None:
+        print("  ⚠️  Could not find the Seating Capacity box — please set it by hand.")
+    else:
+        try:
+            st = ctrls["seating"]
+            st.scroll_into_view_if_needed(timeout=10000)
+            st.click(); st.press("Control+a"); st.press("Backspace"); st.type(str(seats), delay=20)
+            print(f"  ✅  Filled Seating Capacity = {seats}")
+            ni_settle(page)
+        except Exception:
+            print("  ⚠️  Could not fill Seating Capacity — please set it by hand.")
 
-    # Add-on checkboxes — only tick what the Tameen add-ons text mentions. Normalize
+    # Add-on checkboxes — tick only what the Tameen add-ons text mentions. Normalize
     # (drop case/spaces/punctuation) so 'UAE COVER', 'U.A.E Extension', 'RSA' and
     # 'Road Side Assistance' all match. 'Orange Card' rides along with UAE — ignore it.
     if not addons:
@@ -1364,12 +1532,26 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
               "Road Assistance UNticked. Please tick them by hand if needed.")
         return
     norm = re.sub(r"[^a-z0-9]", "", (addons or "").lower())
-    want_uae = "uae" in norm
-    want_rsa = ("rsa" in norm or "roadside" in norm or "roadassist" in norm)
-    ni_set_checkbox(page, "U.A.E. Extension", want_uae,
-                    alt_labels=["UAE Extension", "UAE Extention", "U.A.E Extension", "U.A.E. Exten"])
-    ni_set_checkbox(page, "Road Assistance(ERA)", want_rsa,
-                    alt_labels=["Road Assistance", "Roadside Assistance", "Road Side Assistance", "ERA", "RSA"])
+    want = {"uae": "uae" in norm,
+            "road": ("rsa" in norm or "roadside" in norm or "roadassist" in norm)}
+    for key, label in (("uae", "U.A.E. Extension"), ("road", "Road Assistance(ERA)")):
+        if not want[key]:
+            continue
+        cb = _ni_premium_controls(page, quiet=True)[key]   # fresh — a tick may postback
+        if cb is None:
+            print(f"  ⚠️  Could not find the '{label}' checkbox — please tick it by hand.")
+            continue
+        try:
+            cb.scroll_into_view_if_needed(timeout=10000)
+            if not cb.is_checked():
+                try:
+                    cb.check()
+                except Exception:
+                    cb.click()
+            print(f"  ✅  Ticked '{label}'")
+            ni_settle(page)
+        except Exception:
+            print(f"  ⚠️  Could not tick '{label}' — please tick it by hand.")
 
 
 def ni_reset_to_motor_policy(page) -> None:

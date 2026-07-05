@@ -221,27 +221,56 @@ def _on_applications_table(page) -> bool:
         return False
 
 
+def _applications_ready(page) -> bool:
+    """On the Applications table WITH its (async) rows loaded — wait, then check."""
+    _wait_for_applications_rows(page)
+    return _on_applications_table(page)
+
+
 def tameen_reset_to_applications(page) -> None:
-    """Send Tameen back to the Applications table (browser Back, like the
-    Payments reset). If Back overshoots to the dashboard, click the tile again."""
+    """Send Tameen back to the Applications table for the next record.
+
+    Tameen is a single-page app: the eye-icon opens the record via client-side
+    routing, so browser Back re-renders the list and reloads its rows ASYNCHRONOUSLY.
+    The old code went Back up to 4× waiting only 800ms each — it read the still-empty
+    table, assumed Back had failed, and kept going Back, overshooting past the
+    dashboard to the login page (where the APPLICATIONS tile no longer exists). Now we
+    go Back ONCE and actually wait for the rows before judging, then fall back to
+    navigating by URL rather than blindly clicking Back again.
+    """
     print("\n── Tameen reset: returning to the Applications page ──")
-    for _ in range(4):
-        if _on_applications_table(page):
-            print("  ✅  Back on the Applications page")
-            return
-        try:
-            page.go_back(wait_until="domcontentloaded")
-        except Exception:
-            break
-        page.wait_for_timeout(800)
-    if _on_applications_table(page):
+
+    # 1) One step Back, then WAIT for the rows to load before deciding.
+    try:
+        page.go_back(wait_until="domcontentloaded")
+    except Exception:
+        pass
+    if _applications_ready(page):
         print("  ✅  Back on the Applications page")
         return
+
+    # 2) Back didn't land us there. Go straight to the Applications URL. The record
+    #    URL carries '&page=dashboard/application', so the list lives at that path.
+    origin = "/".join(page.url.split("/")[:3])          # e.g. https://mis.tameen.om
+    for url in (f"{origin}/dashboard/application", f"{origin}/dashboard"):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            continue
+        if _applications_ready(page):
+            print("  ✅  Back on the Applications page")
+            return
+
+    # 3) Last resort: from the dashboard, click the tile the normal way.
     try:
         tameen_click_dashboard_tile(page, "APPLICATIONS")
+        if _applications_ready(page):
+            print("  ✅  Back on the Applications page")
+            return
     except Exception:
-        print("  ⚠️  Could not get back to the Applications page — navigate there by hand,")
-        print("      then continue in this terminal.")
+        pass
+    print("  ⚠️  Could not get back to the Applications page — navigate there by hand,")
+    print("      then continue in this terminal.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
