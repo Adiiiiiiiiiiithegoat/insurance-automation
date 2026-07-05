@@ -1431,39 +1431,46 @@ def _ni_all_frames(page):
     return frames or [page]
 
 
-def _ni_premium_controls(page, quiet: bool = False):
+def _ni_premium_controls(page, need=("coverage", "seating", "uae", "road"),
+                         quiet: bool = False, tries: int = 20):
     """Locate the Premium-section controls across ALL frames/tabs and return element
-    handles (coverage/seating/uae/road, any may be None). Prints a structural dump of
-    the form when something is missing, so the real control names are visible. Re-scan
-    (not reuse) before each action — a New India postback rebuilds these elements."""
+    handles (coverage/seating/uae/road, any may be None).
+
+    These controls render a beat AFTER the Vehicle Details tab loads, and REBUILD
+    after a postback (e.g. selecting Coverage). So we POLL — re-scanning every ~400ms
+    — until every control named in `need` is present, or we run out of tries. Prints a
+    structural dump if something in `need` is still missing after the wait, so the
+    real control names stay visible. Callers ask only for what they are about to use,
+    which lets each field wait out its own render/postback independently."""
+    need = tuple(need)
     out = {"coverage": None, "seating": None, "uae": None, "road": None}
-    best_note, best_dump = None, None
-    for fr in _ni_all_frames(page):
-        try:
-            h = fr.evaluate_handle(_NI_SCAN_JS)
-        except Exception:
-            continue
-        try:
-            if not h.get_property("found").json_value():
-                # keep the FIRST non-empty dump — frames are ordered form-frame first,
-                # so this shows the New India form, not a Tameen frame.
+    best_note = best_dump = None
+    for _ in range(max(1, tries)):
+        out = {"coverage": None, "seating": None, "uae": None, "road": None}
+        best_dump = None
+        for fr in _ni_all_frames(page):
+            try:
+                h = fr.evaluate_handle(_NI_SCAN_JS)
                 dump = h.get_property("dump").json_value() or []
-                if dump and best_dump is None:
-                    best_dump = dump
-                    best_note = h.get_property("note").json_value()
-                continue
-            for k in out:
-                out[k] = h.get_property(k).as_element()
-            best_note = h.get_property("note").json_value()
-            best_dump = h.get_property("dump").json_value() or []
+                note = h.get_property("note").json_value()
+            except Exception:
+                continue                        # frame busy (mid-postback) — skip it
+            if best_dump is None and dump:      # first non-empty dump = the form frame
+                best_dump, best_note = dump, note
+            if h.get_property("found").json_value():
+                for k in out:
+                    if out[k] is None:
+                        el = h.get_property(k).as_element()
+                        if el is not None:
+                            out[k] = el
+                best_note = note
+        if all(out[k] is not None for k in need):
             break
-        except Exception:
-            continue
+        page.wait_for_timeout(400)
 
     if not quiet:
         print(f"  🔎  Premium controls — {best_note or 'no form frame found'}")
-        # If any of the four is missing, show what IS on the page so we can target it.
-        if best_dump and not all(out.values()):
+        if best_dump and not all(out[k] is not None for k in need):
             print("  ── form controls found on the page (label / id / name) ──")
             for line in best_dump:
                 print(f"       {line}")
@@ -1481,10 +1488,11 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
     # 'Premium Calculator' (a submit button — never pressed here). Each control is
     # located by IDENTITY (option contents / id-name / adjacent text), NOT by label
     # position, because label matching kept binding to the wrong look-alike control.
-    ctrls = _ni_premium_controls(page)
+    # We fetch each control right before using it, WAITING (polling) for it to render
+    # — the section appears a beat after the tab loads and rebuilds after a postback.
 
     # Coverage Type — the <select> whose options mention Third Party / Comprehensive.
-    cov = ctrls["coverage"]
+    cov = _ni_premium_controls(page, need=("coverage",))["coverage"]
     if cov is None:
         print("  ⚠️  Could not find the Coverage Type dropdown — please pick it by hand.")
     elif policy_type == "Third Party":
@@ -1508,15 +1516,14 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
 
     # Seating Capacity — the input whose id/name says 'seat'/'capacity'. NEVER a
     # blind label-following write (that is what put '5' into a random box before).
-    # Re-scan: selecting Coverage above may have triggered a postback.
-    ctrls = _ni_premium_controls(page, quiet=True)
+    # Poll: selecting Coverage above triggers a postback that briefly removes it.
+    st = None if not seats else _ni_premium_controls(page, need=("seating",), quiet=True)["seating"]
     if not seats:
         print("  ⚠️  No seats value to put in Seating Capacity — please set it by hand.")
-    elif ctrls["seating"] is None:
+    elif st is None:
         print("  ⚠️  Could not find the Seating Capacity box — please set it by hand.")
     else:
         try:
-            st = ctrls["seating"]
             st.scroll_into_view_if_needed(timeout=10000)
             st.click(); st.press("Control+a"); st.press("Backspace"); st.type(str(seats), delay=20)
             print(f"  ✅  Filled Seating Capacity = {seats}")
@@ -1537,7 +1544,7 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
     for key, label in (("uae", "U.A.E. Extension"), ("road", "Road Assistance(ERA)")):
         if not want[key]:
             continue
-        cb = _ni_premium_controls(page, quiet=True)[key]   # fresh — a tick may postback
+        cb = _ni_premium_controls(page, need=(key,), quiet=True)[key]   # poll — a tick may postback
         if cb is None:
             print(f"  ⚠️  Could not find the '{label}' checkbox — please tick it by hand.")
             continue
