@@ -8,7 +8,7 @@ Run this to verify the mapping works before running full tests.
 Tests various Tameen body types to see if they map correctly.
 """
 
-# Import the mapping function from test.py
+# Import the mapping function from common.py (where the New India helpers live)
 import sys
 import os
 
@@ -20,7 +20,7 @@ except Exception:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from test import ni_body_type_target
+from common import ni_body_type_target
 
 
 def test_mapping():

@@ -1,14 +1,20 @@
 """
-MIC-only automation: read a Tameen record, fill the Muscat Insurance (MIC) policy
-form, leave it as Draft for review. Shared MIC/Tameen engine lives in common.py.
+Production automation: read a Tameen record and fill the matching insurer's
+policy form, left as Draft / at the review step for the employee to check.
+
+Supports TWO insurers, chosen automatically from each Tameen record's company:
+  • Muscat Insurance (MIC)  — filled and left as Draft (no auto-approve).
+  • New India Assurance     — filled and left at the premium-review (no submit).
+
+The shared MIC/Tameen engine AND the New India helpers both live in common.py.
 
 Credentials live in .env (never committed):
-    MIC_USERNAME=...
-    MIC_PASSWORD=...
+    MIC_USERNAME=...   MIC_PASSWORD=...
+    NI_USERNAME=...    NI_PASSWORD=...
 """
 from playwright.sync_api import sync_playwright
 from common import (
-    MIC_HOME_URL,
+    MIC_HOME_URL, NI_LOGIN_URL,
     read_field, parse_tameen_date, compute_period_from, split_plate,
     expiry_far_off, enable_download_dialogs,
     tameen_go_to_payments, tameen_click_payments_by_channel,
@@ -16,21 +22,27 @@ from common import (
     mic_login_if_needed, mic_open_policy_create, mic_choose_policy_type_and_create,
     mic_get_licence, mic_fill_policy_info, mic_get_vehicle,
     mic_fill_vehicle_info, mic_calculate_and_check, mic_reset_to_home,
+    reformat_plate_for_ni, compute_commencing_date_ni, read_tameen_addons,
+    ni_login_if_needed, ni_go_to_motor_policy,
+    ni_fill_primary_top, ni_fill_primary_client, ni_fill_previous_policy,
+    ni_fill_vehicle_details, ni_fill_premium_calculation, ni_reset_to_motor_policy,
 )
 
 
 def tameen_select_and_click_eye(page):
-    """Step 4: list the Muscat Insurance rows and ask which to open.
+    """Step 4: list the records we can process (Muscat Insurance + New India) and
+    ask which to open.
 
-    Returns a (status, record_text) tuple:
-      ("BACK", None)        — user typed 0 (go back to the channel select)
-      ("OK", "<row text>")  — the chosen record was opened; the text is kept so
-                              the main flow can show it in the success / flagged
-                              error summary.
+    Each row is tagged with its insurer, and the chosen insurer is returned so the
+    main flow knows which company's form to fill.
+
+    Returns a (status, record_text, company) tuple:
+      ("BACK", None, None)              — user typed 0 (go back to the channel select)
+      ("OK", "<row text>", "MIC")       — a Muscat Insurance record was opened
+      ("OK", "<row text>", "NEW_INDIA") — a New India record was opened
     """
-    print("\n── Tameen Step 4: Select which record to open (Muscat Insurance only) ──")
+    print("\n── Tameen Step 4: Select which record to open (Muscat Insurance + New India) ──")
     page.wait_for_timeout(1500)
-    COMPANY_FILTER = "muscat insurance"
 
     rows_data = page.evaluate("""
         () => {
@@ -69,23 +81,41 @@ def tameen_select_and_click_eye(page):
     all_rows = rows_data["rows"]
     company_col_idx = next((i for i, h in enumerate(headers[1:], start=0) if "company" in h.lower()), None)
 
-    def is_muscat(r):
-        if company_col_idx is not None:
-            cell_val = r["cells"][company_col_idx] if company_col_idx < len(r["cells"]) else ""
+    def company_of(r):
+        """Return 'MIC' for a Muscat Insurance row, 'NEW_INDIA' for a New India
+        row, or None for any other company (those rows are hidden)."""
+        if company_col_idx is not None and company_col_idx < len(r["cells"]):
+            cell_val = r["cells"][company_col_idx]
         else:
             cell_val = r["text"]
-        return COMPANY_FILTER in cell_val.lower()
+        cv = cell_val.lower()
+        if "muscat insurance" in cv:
+            return "MIC"
+        if "new india" in cv:
+            return "NEW_INDIA"
+        return None
 
-    filtered = [r for r in all_rows if is_muscat(r)]
+    # Keep only rows whose insurer we can process, and remember which insurer each
+    # one is so we can route to the right flow after it is opened.
+    filtered = []
+    for r in all_rows:
+        comp = company_of(r)
+        if comp is not None:
+            r["company"] = comp
+            filtered.append(r)
     if not filtered:
-        print(f"  ⚠️  No rows matched '{COMPANY_FILTER}'. Showing all {len(all_rows)} rows.")
+        print(f"  ⚠️  No Muscat Insurance or New India rows found. Showing all {len(all_rows)} rows.")
+        for r in all_rows:
+            r["company"] = company_of(r)   # may be None for unknown companies
         filtered = all_rows
 
+    TAG = {"MIC": "[MIC]      ", "NEW_INDIA": "[New India]", None: "[Other]    "}
     print("\n" + "=" * 70)
-    print(f"  MUSCAT INSURANCE RECORDS  ({len(filtered)} of {len(all_rows)} total rows)")
+    print(f"  RECORDS WE CAN PROCESS  ({len(filtered)} of {len(all_rows)} total rows)")
     print("=" * 70)
     for i, r in enumerate(filtered, start=1):
-        print(f"  [{i:>2}]  {r['text'] or '(no text)'}")
+        tag = TAG.get(r.get("company"), "[?]        ")
+        print(f"  [{i:>2}]  {tag}  {r['text'] or '(no text)'}")
     print("-" * 70)
     print("  [ 0]  ⤴  Go back (re-open 'Payments by Channel' → choose another channel)")
     print("=" * 70)
@@ -99,7 +129,7 @@ def tameen_select_and_click_eye(page):
             continue
         if choice == 0:
             print("\n  ⤴  Going back to the channel select...")
-            return "BACK", None
+            return "BACK", None, None
         if 1 <= choice <= len(filtered):
             break
         print("  Please enter a valid number in range.")
@@ -143,7 +173,7 @@ def tameen_select_and_click_eye(page):
             # 'domcontentloaded'; this was the last holdout.
             page.wait_for_load_state("domcontentloaded")
             print("  ✅  Opened record")
-            return "OK", selected["text"]
+            return "OK", selected["text"], selected.get("company")
     except Exception:
         pass
     raise RuntimeError(f"Could not open row {choice}.")
@@ -176,6 +206,12 @@ with sync_playwright() as p:
     # error instead of hanging forever.
     mic_page.set_default_timeout(120000)
 
+    print("Opening New India website...")
+    ni_page = context.new_page()
+    # Same 2-minute safety net. New India is a slow ASP.NET site, so the per-action
+    # waits (ni_settle) plus this timeout keep it from racing ahead or hanging.
+    ni_page.set_default_timeout(120000)
+
     # ── Native-dialog safety net ──────────────────────────────────────────────
     # Auto-accept (click OK on) any genuine NATIVE browser dialog — e.g. a
     # beforeunload "Leave site?" prompt that can fire when we navigate or reset a
@@ -185,12 +221,18 @@ with sync_playwright() as p:
     # is an in-page APEX HTML dialog handled by mic_accept_confirm_dialog().
     # See errorlog.md.txt (entry 1) for why the two dialog types are handled apart.
     mic_page.on("dialog", lambda dialog: dialog.accept())
+    ni_page.on("dialog", lambda dialog: dialog.accept())
     tameen_page.on("dialog", lambda dialog: dialog.accept())
 
     # Restore a normal 'Save As' dialog for the employee's Print → Download step.
     enable_download_dialogs(context)
 
     mic_page.goto(MIC_HOME_URL, timeout=60000)
+    ni_page.goto(NI_LOGIN_URL, timeout=60000)
+
+    # Both insurer tabs loaded — bring Tameen back to the front (it's the tab the
+    # operator logs into first; otherwise the last-loaded New India tab shows).
+    tameen_page.bring_to_front()
 
     try:
         # ── TAMEEN: manual OTP login (ONE TIME for the whole run) ─────────────
@@ -209,18 +251,19 @@ with sync_playwright() as p:
 
         # ══════════════════════════════════════════════════════════════════════
         #  PER-RECORD LOOP
-        #  Process one policy, then (on demand) reset BOTH tabs and offer the next.
+        #  Process one policy, then (on demand) reset the tabs and offer the next.
         #  Type 'q' at either prompt to stop and close the browser.
         # ══════════════════════════════════════════════════════════════════════
         while True:
             record_text = None     # the chosen Tameen row's text (for the summaries)
-            prepared    = None     # the values prepared for MIC (filled in below)
+            prepared    = None     # the values prepared for the insurer (filled in below)
+            company     = None     # "MIC" / "NEW_INDIA" — which flow to run
 
             try:
                 # Bring Tameen to the front EACH record: read_field reads via the
                 # clipboard, which only works while this tab is focused. (On record
-                # 2+ the MIC tab was last in front, so without this the reads would
-                # silently fall back to the less-reliable DOM path.)
+                # 2+ the insurer tab was last in front, so without this the reads
+                # would silently fall back to the less-reliable DOM path.)
                 tameen_page.bring_to_front()
 
                 # ── TAMEEN: pick channel + row ────────────────────────────────
@@ -229,21 +272,26 @@ with sync_playwright() as p:
                 while True:
                     tameen_click_payments_by_channel(tameen_page)  # step 2
                     channel_name = tameen_select_channel(tameen_page)  # step 3
-                    status, record_text = tameen_select_and_click_eye(tameen_page)  # step 4
+                    status, record_text, company = tameen_select_and_click_eye(tameen_page)  # step 4
                     if status != "BACK":
                         break
 
-                # ── TAMEEN: read all needed fields ────────────────────────────
+                if company not in ("MIC", "NEW_INDIA"):
+                    raise RuntimeError(
+                        "This record's insurance company is not one we can process "
+                        "automatically (only Muscat Insurance and New India are supported)."
+                    )
+                _COMPANY_NAMES = {"MIC": "Muscat Insurance", "NEW_INDIA": "New India"}
+                print(f"\n  → This record is a {_COMPANY_NAMES[company]} policy.")
+
+                # ── TAMEEN: read the fields BOTH insurers need ────────────────
                 print("\nReading data from Tameen record...")
                 first_name   = read_field(tameen_page, "First Name")
                 last_name    = read_field(tameen_page, "Last Name")
                 license_id   = read_field(tameen_page, "License ID")
                 product_name = read_field(tameen_page, "Product Name")
                 prev_expiry  = read_field(tameen_page, "Previous Expiry")
-                # ⚠️ CONFIRM these three Tameen labels — I guessed them:
                 vehicle_no   = read_field(tameen_page, "Vehicle Number")   # e.g. "B S-4788"
-                sum_insured  = read_field(tameen_page, "Sum Insured")
-                tameen_total = read_field(tameen_page, "Total Premium")
 
                 # Seats — read live from the Tameen View Details page. The label may be
                 # written a few different ways, so try the most likely ones in order.
@@ -256,14 +304,7 @@ with sync_playwright() as p:
                 # Keep only the digits (so 'Seats: 7' or '7 seats' both become '7').
                 seats = "".join(ch for ch in seats_raw if ch.isdigit())
 
-                # ── Derive the values MIC needs ───────────────────────────────
-                full_name    = (first_name + " " + last_name).strip()
-                parsed_expiry = parse_tameen_date(prev_expiry)
-                period_from  = compute_period_from(parsed_expiry)
-                expiry_flagged = expiry_far_off(parsed_expiry)
-                plate_code, plate_number = split_plate(vehicle_no)
-                if expiry_flagged:
-                    print(f"\n⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
+                full_name = (first_name + " " + last_name).strip()
 
                 # Policy type source. Normally read from Product Name, but the
                 # Mobileapp channel leaves Product Name blank and has a dedicated
@@ -286,47 +327,143 @@ with sync_playwright() as p:
                         type_source = pt
                         print(f"  → Mobileapp: using Policy Type '{pt}' (Product Name is blank)")
 
-                # Keep every prepared value together so BOTH the success summary
-                # and the flagged-error summary can show the same details.
-                prepared = {
-                    "Product Name"  : product_name,
-                    "Insured Name"  : full_name,
-                    "License No"    : license_id,
-                    "Period From"   : f"{period_from}   (from expiry '{prev_expiry}')",
-                    **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
-                    "Plate"         : f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
-                    "Seats"         : seats or "(not read — check the Tameen label)",
-                    "Sum Insured"   : sum_insured,
-                    "Tameen Premium": tameen_total,
-                }
+                # Flag a previous-policy expiry that's more than a month away
+                # (renewing too early) — shown in the prepared summary below.
+                expiry_flagged = expiry_far_off(parse_tameen_date(prev_expiry))
+                if expiry_flagged:
+                    print(f"\n⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
 
-                print("\n" + "=" * 60)
-                print("📋  VALUES PREPARED FOR MIC")
-                print("=" * 60)
-                for label, value in prepared.items():
-                    print(f"  {label:<14}: {value}")
-                print("=" * 60)
+                # ══════════════════════════════════════════════════════════════
+                #  ROUTE TO THE RIGHT INSURER
+                # ══════════════════════════════════════════════════════════════
+                if company == "MIC":
+                    # ── extra fields only MIC needs ──
+                    sum_insured  = read_field(tameen_page, "Sum Insured")
+                    tameen_total = read_field(tameen_page, "Total Premium")
+                    period_from  = compute_period_from(parse_tameen_date(prev_expiry))
+                    plate_code, plate_number = split_plate(vehicle_no)
 
-                # ── MIC: fill in the policy (left as Draft — not approved) ────
-                mic_page.bring_to_front()
-                mic_login_if_needed(mic_page)                                   # step 0
-                mic_open_policy_create(mic_page)                                # steps 1–2
-                is_comprehensive = mic_choose_policy_type_and_create(mic_page, type_source)  # steps 3–4
-                mic_get_licence(mic_page, license_id)                          # steps 5–6
-                mic_fill_policy_info(mic_page, full_name, period_from)         # steps 7–12
-                mic_get_vehicle(mic_page, plate_number, plate_code)           # steps 13–15
-                mic_fill_vehicle_info(mic_page, is_comprehensive, sum_insured, seats)  # steps 16–19
-                mic_calculate_and_check(mic_page, tameen_total)               # steps 20–22
-                # Status is intentionally left as Draft — no auto-approve.
+                    prepared = {
+                        "Product Name"  : product_name,
+                        "Insured Name"  : full_name,
+                        "License No"    : license_id,
+                        "Period From"   : f"{period_from}   (from expiry '{prev_expiry}')",
+                        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
+                        "Plate"         : f"code='{plate_code}'  number='{plate_number}'  (from '{vehicle_no}')",
+                        "Seats"         : seats or "(not read — check the Tameen label)",
+                        "Sum Insured"   : sum_insured,
+                        "Tameen Premium": tameen_total,
+                    }
+                    print("\n" + "=" * 60)
+                    print("📋  VALUES PREPARED FOR MIC")
+                    print("=" * 60)
+                    for label, value in prepared.items():
+                        print(f"  {label:<14}: {value}")
+                    print("=" * 60)
 
-                print("\n" + "=" * 60)
-                print("✅  MIC FLOW FINISHED — review the form on screen.")
-                if record_text:
-                    print(f"   Record: {record_text}")
-                print("=" * 60)
+                    # ── MIC: fill in the policy (left as Draft — not approved) ──
+                    mic_page.bring_to_front()
+                    mic_login_if_needed(mic_page)                                   # step 0
+                    mic_open_policy_create(mic_page)                                # steps 1–2
+                    is_comprehensive = mic_choose_policy_type_and_create(mic_page, type_source)  # steps 3–4
+                    mic_get_licence(mic_page, license_id)                          # steps 5–6
+                    mic_fill_policy_info(mic_page, full_name, period_from)         # steps 7–12
+                    mic_get_vehicle(mic_page, plate_number, plate_code)           # steps 13–15
+                    mic_fill_vehicle_info(mic_page, is_comprehensive, sum_insured, seats)  # steps 16–19
+                    mic_calculate_and_check(mic_page, tameen_total)               # steps 20–22
+                    # Status is intentionally left as Draft — no auto-approve.
+
+                    print("\n" + "=" * 60)
+                    print("✅  MIC FLOW FINISHED — review the form on screen.")
+                    if record_text:
+                        print(f"   Record: {record_text}")
+                    print("=" * 60)
+
+                else:  # company == "NEW_INDIA"
+                    # ── extra fields only New India needs ──
+                    # The last few labels are guesses; we try several spellings and
+                    # keep the first that returns a value.
+                    mileage = ""
+                    for lbl in ("Mileage Est", "Mileage", "Mileage Estimate", "Odometer"):
+                        mileage = read_field(tameen_page, lbl)
+                        if mileage:
+                            break
+                    color = ""
+                    for lbl in ("Color", "Colour", "Vehicle Color", "Vehicle Colour"):
+                        color = read_field(tameen_page, lbl)
+                        if color:
+                            break
+                    body_type = ""
+                    for lbl in ("Body Type", "Body", "Vehicle Body Type", "Body Style"):
+                        body_type = read_field(tameen_page, lbl)
+                        if body_type:
+                            break
+                    # Fallback for when New India's own Mulkiya lookup shows 'NOT FOUND'
+                    # for Brand/Model. Tameen's own field is misspelled 'Modal' on the
+                    # live site (that's the real label) — try it first so the normal
+                    # case doesn't print a bogus "'Model' not on this record" warning.
+                    tameen_make = read_field(tameen_page, "Make")
+                    tameen_model = ""
+                    for lbl in ("Modal", "Model"):
+                        tameen_model = read_field(tameen_page, lbl)
+                        if tameen_model:
+                            break
+                    addons = read_tameen_addons(tameen_page)
+
+                    # Policy type drives the Coverage Type dropdown later.
+                    pn = (type_source or "").lower().replace(" ", "")
+                    if "thirdparty" in pn:
+                        policy_type = "Third Party"
+                    elif "comprehensive" in pn:
+                        policy_type = "Comprehensive"
+                    else:
+                        policy_type = None
+                        print(f"  ⚠️  Could not tell policy type from '{type_source}' — "
+                              "Coverage Type will be left for you to pick.")
+
+                    reg_no          = reformat_plate_for_ni(vehicle_no)
+                    commencing_date = compute_commencing_date_ni(prev_expiry)
+
+                    prepared = {
+                        "Product/Type"  : f"{product_name}  →  {policy_type or '(unknown)'}",
+                        "Insured Name"  : full_name,
+                        "License/CivilID": license_id,
+                        "Reg.No"        : f"{reg_no}   (from '{vehicle_no}')",
+                        "Commencing"    : f"{commencing_date}   (from expiry '{prev_expiry}')",
+                        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
+                        "Seats"         : seats or "(not read — check the Tameen label)",
+                        "Mileage"       : mileage or "(not read)",
+                        "Colour"        : color or "(not read)",
+                        "Body Type"     : body_type or "(not read)",
+                        "Add-ons"       : addons or "(none read)",
+                    }
+                    print("\n" + "=" * 60)
+                    print("📋  VALUES PREPARED FOR NEW INDIA")
+                    print("=" * 60)
+                    for label, value in prepared.items():
+                        print(f"  {label:<16}: {value}")
+                    print("=" * 60)
+
+                    # ── NEW INDIA: fill the form (stops at review — no submit) ──
+                    ni_page.bring_to_front()
+                    ni_login_if_needed(ni_page)
+                    ni_go_to_motor_policy(ni_page)
+                    ni_fill_primary_top(ni_page, reg_no, license_id)
+                    ni_fill_primary_client(ni_page, commencing_date, full_name)
+                    brand, model, year = ni_fill_previous_policy(ni_page, mileage, color, full_name)
+                    ni_fill_vehicle_details(ni_page, brand, model, body_type, seats,
+                                            tameen_make, tameen_model)
+                    ni_fill_premium_calculation(ni_page, policy_type, seats, addons)
+                    # Intentionally STOPS here — nothing is saved/submitted.
+
+                    print("\n" + "=" * 60)
+                    print("✅  NEW INDIA FORM FILLED — review on screen.")
+                    if record_text:
+                        print(f"   Record: {record_text}")
+                    print("=" * 60)
 
                 # RESET ON DEMAND: nothing is touched until the employee says so.
-                ans = input("\nReview the result. Press ENTER to reset both tabs and "
+                ans = input("\nReview the result. Press ENTER to reset the tabs and "
                             "process another record, or type 'q' then ENTER to finish ▶  ")
                 if ans.strip().lower() == "q":
                     break
@@ -354,14 +491,19 @@ with sync_playwright() as p:
                 print("    for any missing/extra information to sort this quote out.")
                 print("=" * 60)
 
-                ans = input("\nWhen you are done, press ENTER to reset both tabs and "
+                ans = input("\nWhen you are done, press ENTER to reset the tabs and "
                             "continue to the next record, or type 'q' then ENTER to finish ▶  ")
                 if ans.strip().lower() == "q":
                     break
 
             # Reached only when CONTINUING (after a success OR a flagged error):
-            # send both tabs back to their starting points for the next record.
-            mic_reset_to_home(mic_page)
+            # send the tabs back to their starting points for the next record.
+            # Only the insurer tab we actually used is reset (the other is left
+            # alone). If we failed before knowing the insurer, reset MIC by default.
+            if company == "NEW_INDIA":
+                ni_reset_to_motor_policy(ni_page)
+            else:
+                mic_reset_to_home(mic_page)
             tameen_reset_to_payments(tameen_page)
 
     except Exception as e:
