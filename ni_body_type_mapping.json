@@ -1,0 +1,36 @@
+{
+  "description": "Maps Tameen body types (and optionally seats) to New India dropdown options. Each entry can be a string (exact match), a list of strings (all must appear in the option), or a dict with seat-based branches.",
+  "mappings": {
+    "SEDAN": ["SALOON", "UPTO 15"],
+    "SALOON": ["SALOON", "UPTO 15"],
+    "SUV": ["FOUR WHEEL DRIVE", "UPTO 15"],
+    "4WD": ["FOUR WHEEL DRIVE", "UPTO 15"],
+    "4 WHEEL": ["FOUR WHEEL DRIVE", "UPTO 15"],
+    "FOUR WHEEL": ["FOUR WHEEL DRIVE", "UPTO 15"],
+    "HATCHBACK": ["HATCH BACK", "UPTO 15"],
+    "HATCH BACK": ["HATCH BACK", "UPTO 15"],
+    "HATCHBACK 5": ["HATCH BACK", "UPTO 15"],
+    "PICKUP": {
+      "seats_3": ["PICKUP", "3 TON"],
+      "seats_other": ["PICKUP", "4WD"],
+      "seats_unknown": ["PICKUP", "4WD"]
+    },
+    "PICK UP": {
+      "seats_3": ["PICKUP", "3 TON"],
+      "seats_other": ["PICKUP", "4WD"],
+      "seats_unknown": ["PICKUP", "4WD"]
+    },
+    "COUPE": ["SALOON", "UPTO 15"],
+    "CONVERTIBLE": ["SALOON", "UPTO 15"],
+    "STATION WAGON": ["SALOON", "UPTO 15"],
+    "VAN": ["HATCH BACK", "UPTO 15"],
+    "MINIVAN": ["HATCH BACK", "UPTO 15"],
+    "TRUCK": ["PICKUP", "4WD"],
+    "JEEP": ["FOUR WHEEL DRIVE", "UPTO 15"],
+    "WAGON": ["SALOON", "UPTO 15"]
+  },
+  "unmatched_body_types": [
+    "Note: when a Tameen body type does not match any entry above, it falls back to manual selection.",
+    "Add any new body types you encounter here, or update the mappings dict."
+  ]
+}

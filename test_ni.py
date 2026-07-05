@@ -100,9 +100,29 @@ _CLICK_EYE_JS = """
 """
 
 
+def _wait_for_applications_rows(page, timeout_ms=20000) -> None:
+    """Poll until the Applications table actually has data rows.
+
+    The tile click only waits for 'domcontentloaded' (HTML shell ready); the
+    table itself loads its rows afterwards via an async call. A fixed short
+    sleep here was racing that load and reading an empty table. wait_for_function
+    polls fast in-browser and returns the instant rows exist, so this is no
+    slower than before on a quick load and far more reliable on a slow one.
+    """
+    try:
+        page.wait_for_function(
+            """() => document.querySelectorAll('table tbody tr').length > 0 ||
+                     [...document.querySelectorAll('[role="row"]')].some(
+                         r => !r.querySelector('[role="columnheader"]') && !r.closest('thead'))""",
+            timeout=timeout_ms,
+        )
+    except Exception:
+        pass  # fall through — the caller raises its own clear error if still empty
+
+
 def _list_ni_rows(page):
     """Read the Applications table and return only the New India rows."""
-    page.wait_for_timeout(1500)
+    _wait_for_applications_rows(page)
     rows_data = page.evaluate(_READ_ROWS_JS)
     if not rows_data or not rows_data.get("rows"):
         raise RuntimeError("Could not read any table rows on the Applications page.")

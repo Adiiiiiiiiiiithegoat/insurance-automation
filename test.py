@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright
 from datetime import timedelta, date
 import json
 import os
+import re
 from common import (
     MIC_HOME_URL,
     read_field, parse_tameen_date, compute_period_from, split_plate,
@@ -328,7 +329,8 @@ def _ni_scope(page):
     return page
 
 
-def ni_fill_by_label(page, label: str, value: str, press_escape: bool = False) -> bool:
+def ni_fill_by_label(page, label: str, value: str, press_escape: bool = False,
+                     alt_labels=None) -> bool:
     """Type a value into a New India text box found by the words next to it.
 
     New India uses a TABLE layout: the label sits in one cell and the input box
@@ -385,6 +387,22 @@ def ni_fill_by_label(page, label: str, value: str, press_escape: bool = False) -
             return True
         except Exception:
             continue
+    # Last resort: fuzzy, normalized label match (different case/spacing/wording).
+    el = _ni_fuzzy_handle(page, [label] + (alt_labels or []), "input")
+    if el is not None:
+        try:
+            el.scroll_into_view_if_needed(timeout=10000)
+            el.click()
+            el.press("Control+a")
+            el.press("Backspace")
+            el.type(value, delay=20)
+            if press_escape:
+                el.press("Escape")
+            print(f"  ✅  Filled '{label}' = {value}   (matched loosely)")
+            ni_settle(page)
+            return True
+        except Exception:
+            pass
     print(f"  ⚠️  Could not fill '{label}' — please set it by hand.")
     return False
 
@@ -467,10 +485,98 @@ def ni_read_by_label(page, label: str, quiet: bool = False) -> str:
     return ""
 
 
-def _ni_find_select(page, label):
+# Fuzzy, position-based finder used as a LAST-RESORT fallback by every label
+# helper below. New India's labels are not always what we expect — different case
+# ("Seating capacity"), spacing/punctuation ("U.A.E Extension" vs "U.A.E. Extention"),
+# or abbreviations. This matches a label by its NORMALIZED text (uppercase, letters
+# and digits only) against any of several candidate labels, then pairs it with the
+# control sitting on the same on-screen line (to the right for inputs/selects, either
+# side for checkboxes) — exactly how a human reads the form. Returns a JS element.
+_NI_FUZZY_JS = """
+    (args) => {
+        const {labels, kind} = args;
+        const NORM = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+        const targets = labels.map(NORM).filter(Boolean);
+        const hit = own => {
+            const o = NORM(own);
+            if (!o) return false;
+            return targets.some(t => o === t ||
+                (t.length >= 3 && o.includes(t)) || (o.length >= 3 && t.includes(o)));
+        };
+        const tags = ['td','th','label','span','div','b','strong','font','p','a','li'];
+        const labs = [];
+        for (const el of document.querySelectorAll(tags.join(','))) {
+            let own = '';
+            for (const n of el.childNodes) if (n.nodeType === 3) own += n.textContent;
+            if (hit(own)) labs.push(el);
+        }
+        if (!labs.length) return null;
+        const isTarget = c => {
+            const t = ((c.getAttribute && c.getAttribute('type')) || 'text').toLowerCase();
+            if (kind === 'select')   return c.tagName === 'SELECT';
+            if (kind === 'checkbox') return c.tagName === 'INPUT' && t === 'checkbox';
+            if (c.tagName === 'TEXTAREA') return true;
+            return c.tagName === 'INPUT' &&
+                !['hidden','checkbox','radio','button','submit','image','file'].includes(t);
+        };
+        const ctrls = [...document.querySelectorAll('input,textarea,select')].filter(isTarget);
+        if (!ctrls.length) return null;
+        let best = null, bestScore = Infinity;
+        for (const lab of labs) {
+            const lr = lab.getBoundingClientRect();
+            if (lr.width === 0 && lr.height === 0) continue;
+            for (const c of ctrls) {
+                const cr = c.getBoundingClientRect();
+                if (cr.width === 0 && cr.height === 0) continue;
+                const sameLine = (cr.bottom > lr.top + 2) && (cr.top < lr.bottom - 2);
+                if (!sameLine) continue;
+                let horiz;
+                if (kind === 'checkbox') {
+                    horiz = Math.abs((cr.left + cr.right) / 2 - (lr.left + lr.right) / 2);
+                } else {
+                    if (cr.left < lr.left - 2) continue;   // input/select must be to the right
+                    horiz = cr.left - lr.right;
+                }
+                const score = horiz + Math.abs((cr.top + cr.bottom) / 2 - (lr.top + lr.bottom) / 2);
+                if (score < bestScore) { bestScore = score; best = c; }
+            }
+        }
+        if (best) return best;
+        for (const c of ctrls)          // fallback: first control after the label in the DOM
+            if (labs[0].compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) return c;
+        return null;
+    }
+"""
+
+
+def _ni_fuzzy_handle(page, labels, kind):
+    """Return an ElementHandle for the control matched by fuzzy label + on-screen
+    position, or None. `kind` is 'input', 'select' or 'checkbox'."""
+    sc = _ni_scope(page)
+    try:
+        handle = sc.evaluate_handle(_NI_FUZZY_JS, {"labels": list(labels), "kind": kind})
+        return handle.as_element()
+    except Exception:
+        return None
+
+
+def _sel_option_texts(target):
+    """Option texts of a dropdown, whether `target` is a Locator or an ElementHandle."""
+    try:
+        return target.locator("option").all_inner_texts()          # Locator
+    except Exception:
+        pass
+    try:
+        return [(o.inner_text() or "") for o in target.query_selector_all("option")]  # handle
+    except Exception:
+        return []
+
+
+def _ni_find_select(page, label, alt_labels=None):
     """Find a New India dropdown (<select>) by the words next to it. None if missing.
     The <select>-specific XPaths are tried FIRST so a label like 'Customer' lands on
-    the real dropdown and never on a same-named text box (e.g. 'Customer Name')."""
+    the real dropdown and never on a same-named text box (e.g. 'Customer Name').
+    Falls back to a fuzzy, normalized match (returns an ElementHandle then)."""
     sc = _ni_scope(page)
     getters = [
         # EXACT label in its own cell → the dropdown in the next cell (precise)
@@ -496,12 +602,13 @@ def _ni_find_select(page, label):
                 return el
         except Exception:
             continue
-    return None
+    # Last resort: fuzzy, normalized label match (handles different case/spacing).
+    return _ni_fuzzy_handle(page, [label] + (alt_labels or []), "select")
 
 
-def ni_select_exact(page, label: str, option_text: str) -> bool:
+def ni_select_exact(page, label: str, option_text: str, alt_labels=None) -> bool:
     """Pick an EXACT option in a New India dropdown found by its label."""
-    sel = _ni_find_select(page, label)
+    sel = _ni_find_select(page, label, alt_labels)
     if sel is not None:
         try:
             sel.select_option(label=option_text)
@@ -527,25 +634,25 @@ def ni_select_exact(page, label: str, option_text: str) -> bool:
         return False
 
 
-def ni_select_contains(page, label: str, substrings) -> bool:
+def ni_select_contains(page, label: str, substrings, alt_labels=None) -> bool:
     """Pick the dropdown option that contains ALL of the given substrings
     (case-insensitive). Used when we don't know the exact option text — e.g. the
     car Make / Model / Body Type / Coverage Type lists. Prints which option it
     chose so you can double-check it picked the right one.
     """
-    wanted = [str(s).upper() for s in substrings]
-    sel = _ni_find_select(page, label)
+    # Match on normalized text (letters+digits only) so a wanted 'HATCH BACK' still
+    # matches an option written 'HATCHBACK UPTO 15000', and case/punctuation vary.
+    def _n(s): return re.sub(r"[^A-Z0-9]", "", str(s).upper())
+    wanted = [_n(s) for s in substrings]
+    sel = _ni_find_select(page, label, alt_labels)
     if sel is None:
         print(f"  ⚠️  Could not find the '{label}' dropdown — please set it by hand "
               f"(looking for an option containing: {', '.join(map(str, substrings))}).")
         return False
-    try:
-        options = sel.locator("option").all_inner_texts()
-    except Exception:
-        options = []
+    options = _sel_option_texts(sel)
     chosen = None
     for opt in options:
-        up = opt.upper()
+        up = _n(opt)
         if all(w in up for w in wanted):
             chosen = opt
             break
@@ -643,7 +750,7 @@ def ni_click_tab(page, tab_text: str) -> bool:
     return False
 
 
-def ni_set_checkbox(page, label: str, checked: bool) -> bool:
+def ni_set_checkbox(page, label: str, checked: bool, alt_labels=None) -> bool:
     """Tick a checkbox found by the words next to it. Does NOTHING when checked is
     False (we only ever tick add-ons on, never off). 'label' is matched loosely,
     so 'UAE Exten' matches both 'UAE Extension' and the misspelled 'UAE Extention'.
@@ -682,6 +789,21 @@ def ni_set_checkbox(page, label: str, checked: bool) -> bool:
             return True
         except Exception:
             continue
+    # Last resort: fuzzy, normalized label match (different case/spacing/wording).
+    cb = _ni_fuzzy_handle(page, [label] + (alt_labels or []), "checkbox")
+    if cb is not None:
+        try:
+            cb.scroll_into_view_if_needed(timeout=10000)
+            if not cb.is_checked():
+                try:
+                    cb.check()
+                except Exception:
+                    cb.click()
+            print(f"  ✅  Ticked '{label}'   (matched loosely)")
+            ni_settle(page)
+            return True
+        except Exception:
+            pass
     print(f"  ⚠️  Could not tick '{label}' — please tick it by hand if needed.")
     return False
 
@@ -707,34 +829,86 @@ def compute_commencing_date_ni(prev_expiry_str: str) -> str:
     return start.strftime("%d/%m/%Y")
 
 
+def _load_body_type_mapping():
+    """Load the Body Type mapping from ni_body_type_mapping.json.
+    Returns a dict of {body_type_upper: target_list} or {} if file not found."""
+    mapping_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ni_body_type_mapping.json")
+    if not os.path.exists(mapping_path):
+        return {}
+    try:
+        with open(mapping_path, encoding="utf-8") as f:
+            data = json.load(f)
+            mappings = data.get("mappings", {})
+            # Normalize keys to uppercase for case-insensitive lookup
+            return {k.upper(): v for k, v in mappings.items()}
+    except Exception:
+        return {}
+
+
+# ponytail: load once at module level to avoid repeated file I/O
+_BODY_TYPE_MAP = _load_body_type_mapping()
+
+
+def _resolve_body_type_value(val, seat_n):
+    """A mapping entry is either a flat list of substrings, or a dict with
+    seat-based branches: 'seats_<N>' (exact seat count), 'seats_other' (any
+    other known seat count), 'seats_unknown' (no seat count was read)."""
+    if isinstance(val, list):
+        return val
+    if isinstance(val, dict):
+        if seat_n is not None:
+            for key in (f"seats_{seat_n}", "seats_other"):
+                if isinstance(val.get(key), list):
+                    return val[key]
+        if isinstance(val.get("seats_unknown"), list):
+            return val["seats_unknown"]
+    return None
+
+
+def _is_pickup(body_type: str) -> bool:
+    """True for ANY pickup body type, however it is spelt: 'pickup', 'pick up',
+    'pick-up', 'PICK UP DOUBLE CAB', etc. Punctuation and spacing are ignored."""
+    return "PICK" in re.sub(r"[^A-Z0-9]", "", (body_type or "").upper())
+
+
 def ni_body_type_target(body_type: str, seats: str):
     """Turn the Tameen Body Type (+ seat count) into the words that MUST appear in
-    New India's Body Type option. Returns a list of substrings, or None if we
-    can't decide (the caller then leaves Body Type unset and warns)."""
-    # New India's real option text (and quirks) seen in the dropdown:
-    #   FOUR WHEEL DRIVE (UPTO 15,000) / FOUR WHEEL DRIVE(15001-50000)
-    #   SALOON (UPTO 15,000)           / SALOON(15001-50000)
-    #   HATCH BACK (UPTO 15000)        / HATCH BACK (15001 - 50000)   ← "HATCH BACK", a space
-    #   PICKUP - UPTO 3 TONS           / PICKUP - 4WD
-    # The "(UPTO 15...)" vs "(15001-50000)" split is by VEHICLE VALUE. We don't get a
-    # value from Tameen, so we DEFAULT to the lower "UPTO 15" bracket and print which
-    # option was picked so it can be checked. ("UPTO 15" matches both "15000" and
-    # "15,000" spellings.)
-    b = (body_type or "").upper()
-    seat_n = None
+    New India's Body Type option. Uses the mapping from ni_body_type_mapping.json.
+    Returns a list of substrings, or None if we can't decide (the caller then
+    leaves Body Type unset and warns).
+
+    Tries (in order):
+      0. Pickup (any spelling): choose 3-TON when 3 seats, else the 4WD pickup
+      1. Exact match: body_type as a key in the mapping
+      2. Substring match: any key from the mapping that is contained in body_type
+      3. Fallback: None (manual selection)
+    """
+    b_upper = (body_type or "").upper()
+    if not b_upper:
+        return None
+
     digits = "".join(ch for ch in str(seats) if ch.isdigit())
-    if digits:
-        seat_n = int(digits)
-    if "SUV" in b or "4 WHEEL" in b or "FOUR WHEEL" in b:
-        return ["FOUR WHEEL DRIVE", "UPTO 15"]
-    if "SALOON" in b:
-        return ["SALOON", "UPTO 15"]
-    if "HATCHBACK" in b or "HATCH BACK" in b:
-        return ["HATCH BACK", "UPTO 15"]
-    if "PICKUP" in b or "PICK UP" in b:
-        # Only seats=3 gets UPTO 3 TONS; every other/unknown seat count defaults
-        # to 4WD instead of leaving Body Type blank.
+    seat_n = int(digits) if digits else None
+
+    # Pickup is special: catch every spelling (incl. 'pick up double cab') up front,
+    # and pick the option by seat count. The caller also flags it for manual review.
+    if _is_pickup(body_type):
         return ["PICKUP", "3 TON"] if seat_n == 3 else ["PICKUP", "4WD"]
+
+    if not _BODY_TYPE_MAP:
+        return None
+
+    if b_upper in _BODY_TYPE_MAP:
+        result = _resolve_body_type_value(_BODY_TYPE_MAP[b_upper], seat_n)
+        if result is not None:
+            return result
+
+    for key, val in _BODY_TYPE_MAP.items():
+        if key in b_upper:
+            result = _resolve_body_type_value(val, seat_n)
+            if result is not None:
+                return result
+
     return None
 
 
@@ -998,8 +1172,10 @@ def ni_fill_primary_client(page, commencing_date: str, customer_name: str) -> No
         pass
     ni_settle(page)
     ni_select_exact(page, "Customer", NI_CUSTOMER)
-    ni_fill_by_label(page, "Customer Name", customer_name)
-    ni_fill_by_label(page, "Telephone No", NI_TELEPHONE)
+    ni_fill_by_label(page, "Customer Name", customer_name,
+                     alt_labels=["Name of Customer", "Customer's Name", "Insured Name", "Client Name"])
+    ni_fill_by_label(page, "Telephone No", NI_TELEPHONE,
+                     alt_labels=["Telephone", "Phone No", "Mobile No", "Contact No"])
 
 
 def ni_fill_previous_policy(page, mileage: str, color: str, full_name: str):
@@ -1098,7 +1274,7 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
             try:
                 model_sel = _ni_find_select(page, "Model")
                 if model_sel is not None:
-                    opts = [o for o in model_sel.locator("option").all_inner_texts()
+                    opts = [o for o in _sel_option_texts(model_sel)
                             if o.strip() and o.strip().lower() != "select"]
                     if opts:
                         break
@@ -1121,7 +1297,22 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
                 pass
             page.wait_for_timeout(NI_STEP_PAUSE)
 
+    # PICKUP needs a human eye — the seat count decides 3-TON vs 4WD and Tameen's
+    # labels vary ('pick up double cab', etc). Shout about it, loudly and in red.
+    if _is_pickup(body_type):
+        red = "\033[41m\033[97m"      # white on red (falls back to plain text if unsupported)
+        reset = "\033[0m"
+        print("\n" + red + " " * 70 + reset)
+        print(red + f"  🚨  PICKUP DETECTED ('{body_type}', seats={seats or '?'}) — PLEASE REVIEW BODY TYPE PROPERLY  ".ljust(70) + reset)
+        print(red + " " * 70 + reset)
+
     targets = ni_body_type_target(body_type, seats)
+    # Track unmatched body types for later mapping improvement
+    try:
+        from ni_body_type_tracker import track_body_type
+        track_body_type(body_type, seats, targets)
+    except ImportError:
+        pass
     if targets is None:
         print(f"  ⚠️  Body Type '{body_type}' (seats={seats}) is not in the mapping — "
               "please pick the Body Type by hand.")
@@ -1147,29 +1338,38 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
     # Coverage Type — only the Third Party branch is defined for now. We match on a
     # few distinctive words because the real option uses '&' ("Third Party with PA
     # Cover to Driver & Family"), so matching the whole phrase with 'and' would miss.
+    cov_alt = ["Cover Type", "Coverage", "Type of Cover", "Cover"]
     if policy_type == "Third Party":
-        ni_select_contains(page, "Coverage Type", ["Third Party", "PA Cover", "Driver"])
+        ni_select_contains(page, "Coverage Type", ["Third Party", "PA Cover", "Driver"],
+                           alt_labels=cov_alt)
     elif policy_type == "Comprehensive":
         print("  ⚠️  Comprehensive Coverage Type is not defined yet — please pick it by hand.")
     else:
         print(f"  ⚠️  Unknown policy type '{policy_type}' — please pick Coverage Type by hand.")
 
-    # Seating Capacity — ni_fill_by_label already clears the box first, then types.
+    # Seating Capacity — try the text box first; if that layout uses a dropdown
+    # instead, fall back to picking the matching option.
+    seat_alt = ["Seating capacity", "Seat Capacity", "No. of Seats", "Number of Seats", "No Of Seats", "Seats"]
     if seats:
-        ni_fill_by_label(page, "Seating Capacity", seats)
+        if not ni_fill_by_label(page, "Seating Capacity", seats, alt_labels=seat_alt):
+            ni_select_contains(page, "Seating Capacity", [seats], alt_labels=seat_alt)
     else:
         print("  ⚠️  No seats value to put in Seating Capacity — please set it by hand.")
 
-    # Add-on checkboxes — only tick what the Tameen add-ons text actually mentions.
-    # New India labels them "U.A.E. Extension" and "Road Assistance / ERA / IMC".
-    addons_l = (addons or "").lower()
+    # Add-on checkboxes — only tick what the Tameen add-ons text mentions. Normalize
+    # (drop case/spaces/punctuation) so 'UAE COVER', 'U.A.E Extension', 'RSA' and
+    # 'Road Side Assistance' all match. 'Orange Card' rides along with UAE — ignore it.
     if not addons:
         print("  ⚠️  No add-ons were read from Tameen — leaving U.A.E. Extension and "
               "Road Assistance UNticked. Please tick them by hand if needed.")
         return
-    ni_set_checkbox(page, "U.A.E. Exten", "uae" in addons_l)   # matches 'Extension' / 'Extention'
-    ni_set_checkbox(page, "Road Assistance",
-                    ("roadside" in addons_l or "road side" in addons_l))
+    norm = re.sub(r"[^a-z0-9]", "", (addons or "").lower())
+    want_uae = "uae" in norm
+    want_rsa = ("rsa" in norm or "roadside" in norm or "roadassist" in norm)
+    ni_set_checkbox(page, "U.A.E. Extension", want_uae,
+                    alt_labels=["UAE Extension", "UAE Extention", "U.A.E Extension", "U.A.E. Exten"])
+    ni_set_checkbox(page, "Road Assistance(ERA)", want_rsa,
+                    alt_labels=["Road Assistance", "Roadside Assistance", "Road Side Assistance", "ERA", "RSA"])
 
 
 def ni_reset_to_motor_policy(page) -> None:
