@@ -37,6 +37,38 @@
     document.getElementById('result-card').scrollIntoView({behavior:'smooth'});
   }
 
+  // Ask for desktop-notification permission up front so the "done" alert can fire.
+  if (window.Notification && Notification.permission === 'default') Notification.requestPermission();
+
+  // Attention when the automation finishes: beep + desktop notification + focus this window.
+  // No sound file needed — a short WebAudio tone (native, works offline).
+  function notifyDone(title, isError){
+    try {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.connect(g); g.connect(ac.destination);
+      o.frequency.value = isError ? 330 : 660; o.type = 'sine';
+      g.gain.setValueAtTime(0.001, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.3, ac.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.6);
+      o.start(); o.stop(ac.currentTime + 0.6);
+    } catch(e){}
+    try { window.focus(); } catch(e){}
+    try {
+      if (window.Notification && Notification.permission === 'granted'){
+        const n = new Notification(title, { body: 'Switch to the Policy Automation window.' });
+        n.onclick = () => { window.focus(); n.close(); };
+      }
+    } catch(e){}
+  }
+
+  // Notes the employee must act on once the form is filled.
+  const CHECK_NOTE = '<div class="banner info"><strong>Please double-check before confirming:</strong>'
+    + '<ul><li>Name and Address</li><li>Make and Model</li>'
+    + '<li>Any field that should have been filled but is blank</li></ul></div>';
+  const NI_MANUAL_NOTE = '<div class="banner alert">Fill these New India fields by hand — the '
+    + 'automation cannot: <strong>Place of Manufacture, HP CC, Emp. Weight, Load Weight, Model Year.</strong></div>';
+
   const src = new EventSource("{{ url_for('progress_stream') }}");
   src.onmessage = (e) => {
     const d = JSON.parse(e.data);
@@ -48,6 +80,7 @@
       showResult('<div class="banner red"><strong>❌ This quote hit a problem — flagged for review.</strong></div>'
         + rec + '<pre>' + esc(d.message) + '</pre>'
         + '<p>Investigate in the browser, sort out any missing info, then reset for the next one. The policy was left as a draft.</p>');
+      notifyDone('Automation stopped — needs review', true);
       src.close();
     } else if (d.type === 'final') {
       steps.forEach((_, i) => set(i, 'done'));
@@ -81,7 +114,9 @@
         }
         details += '</div>';
       }
-      showResult(flagBanner + body + rec + details);
+      const notes = CHECK_NOTE + (d.insurer === 'NEW_INDIA' ? NI_MANUAL_NOTE : '');
+      showResult(flagBanner + body + rec + notes + details);
+      notifyDone('Automation done — ready for review', false);
       src.close();
     }
   };
