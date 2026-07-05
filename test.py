@@ -753,64 +753,6 @@ def ni_click_tab(page, tab_text: str) -> bool:
     return False
 
 
-def ni_set_checkbox(page, label: str, checked: bool, alt_labels=None) -> bool:
-    """Tick a checkbox found by the words next to it. Does NOTHING when checked is
-    False (we only ever tick add-ons on, never off). 'label' is matched loosely,
-    so 'UAE Exten' matches both 'UAE Extension' and the misspelled 'UAE Extention'.
-    """
-    if not checked:
-        return False
-    sc = _ni_scope(page)
-    getters = [
-        lambda: sc.get_by_label(label, exact=False).first,
-        lambda: sc.locator(
-            f'xpath=//label[contains(normalize-space(.),"{label}")]/preceding::input[@type="checkbox"][1]'
-        ).first,
-        lambda: sc.locator(
-            f'xpath=//*[contains(normalize-space(.),"{label}")]/preceding::input[@type="checkbox"][1]'
-        ).first,
-        lambda: sc.locator(
-            f'xpath=//label[contains(normalize-space(.),"{label}")]/following::input[@type="checkbox"][1]'
-        ).first,
-        lambda: sc.locator(
-            f'xpath=//*[contains(normalize-space(.),"{label}")]/following::input[@type="checkbox"][1]'
-        ).first,
-    ]
-    for g in getters:
-        try:
-            cb = g()
-            if cb.count() == 0:
-                continue
-            cb.scroll_into_view_if_needed(timeout=10000)
-            if not cb.is_checked():
-                try:
-                    cb.check()
-                except Exception:
-                    cb.click()
-            print(f"  ✅  Ticked '{label}'")
-            ni_settle(page)
-            return True
-        except Exception:
-            continue
-    # Last resort: fuzzy, normalized label match (different case/spacing/wording).
-    cb = _ni_fuzzy_handle(page, [label] + (alt_labels or []), "checkbox")
-    if cb is not None:
-        try:
-            cb.scroll_into_view_if_needed(timeout=10000)
-            if not cb.is_checked():
-                try:
-                    cb.check()
-                except Exception:
-                    cb.click()
-            print(f"  ✅  Ticked '{label}'   (matched loosely)")
-            ni_settle(page)
-            return True
-        except Exception:
-            pass
-    print(f"  ⚠️  Could not tick '{label}' — please tick it by hand if needed.")
-    return False
-
-
 # ── New India small value helpers ─────────────────────────────────────────────
 
 def reformat_plate_for_ni(vehicle_number: str) -> str:
@@ -1381,16 +1323,8 @@ _NI_SCAN_JS = r"""
             return key.includes('SEAT') || key.includes('CAPACITY');
         }) || null;
 
-        // CHECKBOXES: label mentions UAE / road assistance.
-        const cbs = inputs.filter(i => (i.getAttribute('type') || '').toLowerCase() === 'checkbox');
-        let uae = null, road = null;
-        for (const cb of cbs) {
-            const t = NORM(labelOf(cb) + ' ' + (cb.id || '') + ' ' + (cb.name || ''));
-            if (!uae && t.includes('UAE')) uae = cb;
-            if (!road && (t.includes('ROADASSIST') || t.includes('ROADSIDE'))) road = cb;   // not bare 'ERA'
-        }
-
-        // DUMP: compact, human-readable list of what is actually here.
+        // DUMP: compact, human-readable list of what is actually here (shown only when
+        // a control is missing, so the real names are visible for a quick fix).
         const dump = [];
         selects.forEach(s => dump.push('SELECT [' + SHOW(labelOf(s)) + '] id=' + (s.id || '-') +
             ' opts={' + [...s.options].slice(0, 5).map(o => SHOW(o.textContent)).join(' / ') + '}'));
@@ -1402,12 +1336,10 @@ _NI_SCAN_JS = r"""
         });
 
         return {
-            coverage, seating, uae, road,
-            found: !!(coverage || seating || uae || road),
+            coverage, seating,
+            found: !!(coverage || seating),
             note: 'Coverage:' + (coverage ? 'found' : 'MISSING') +
-                  ' Seating:' + (seating ? 'found' : 'MISSING') +
-                  ' UAE:' + (uae ? 'found' : 'MISSING') +
-                  ' Road:' + (road ? 'found' : 'MISSING'),
+                  ' Seating:' + (seating ? 'found' : 'MISSING'),
             dump,
         };
     }
@@ -1431,10 +1363,10 @@ def _ni_all_frames(page):
     return frames or [page]
 
 
-def _ni_premium_controls(page, need=("coverage", "seating", "uae", "road"),
+def _ni_premium_controls(page, need=("coverage", "seating"),
                          quiet: bool = False, tries: int = 20):
-    """Locate the Premium-section controls across ALL frames/tabs and return element
-    handles (coverage/seating/uae/road, any may be None).
+    """Locate the Premium-section Coverage/Seating controls across ALL frames/tabs and
+    return element handles (either may be None).
 
     These controls render a beat AFTER the Vehicle Details tab loads, and REBUILD
     after a postback (e.g. selecting Coverage). So we POLL — re-scanning every ~400ms
@@ -1443,10 +1375,10 @@ def _ni_premium_controls(page, need=("coverage", "seating", "uae", "road"),
     real control names stay visible. Callers ask only for what they are about to use,
     which lets each field wait out its own render/postback independently."""
     need = tuple(need)
-    out = {"coverage": None, "seating": None, "uae": None, "road": None}
+    out = {"coverage": None, "seating": None}
     best_note = best_dump = None
     for _ in range(max(1, tries)):
-        out = {"coverage": None, "seating": None, "uae": None, "road": None}
+        out = {"coverage": None, "seating": None}
         best_dump = None
         for fr in _ni_all_frames(page):
             try:
@@ -1478,6 +1410,81 @@ def _ni_premium_controls(page, need=("coverage", "seating", "uae", "road"),
     return out
 
 
+# Add-on checkboxes, targeted by their EXACT ASP.NET id (learned from the page):
+#   U.A.E. Extension        → id ends '...chkUAE'
+#   Road Assistance (ERA)   → id ends '...chkERA'   (a separate '...chkIMC' exists)
+# A JS synthetic .click() would NOT stick on chkERA (its onclick/postback ignores an
+# untrusted event), which is why every "click in the browser" attempt failed. So we
+# use a real, TRUSTED Playwright click via a locator on the exact id, re-resolved each
+# pass (no stale handle), and VERIFY the box actually reads checked — retrying to ride
+# out the U.A.E. postback. Locating by id also removes all label-matching guesswork.
+_ADDON_ID_SUFFIX = {"uae": "chkUAE", "road": "chkERA"}
+
+_NI_CHECKBOX_DUMP_JS = r"""
+    () => [...document.querySelectorAll('input[type="checkbox"]')].map(cb => {
+        const near = (cb.parentElement ? cb.parentElement.innerText : '')
+            .replace(/\s+/g, ' ').trim().slice(0, 40);
+        return 'CHECK checked=' + (cb.checked ? 'Y' : 'n') + ' id=' + (cb.id || '-') +
+               ' name=' + (cb.name || '-') + ' near=[' + near + ']';
+    })
+"""
+
+
+def _ni_addon_locator(page, suffix):
+    """The checkbox whose id ends with `suffix`, in whichever frame/tab holds it."""
+    for fr in _ni_all_frames(page):
+        try:
+            loc = fr.locator(f'input[id$="{suffix}"]')
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            continue
+    return None
+
+
+def ni_set_addon(page, which, label, tries: int = 12) -> bool:
+    """Guarantee an add-on checkbox ends up TICKED, targeting it by exact id and using
+    a real trusted click. The loop condition is the box's ACTUAL checked state, so a
+    success means it is genuinely on — retried to survive the U.A.E. postback."""
+    suffix = _ADDON_ID_SUFFIX[which]
+    for _ in range(tries):
+        loc = _ni_addon_locator(page, suffix)
+        if loc is None:
+            page.wait_for_timeout(400)                 # not rendered yet
+            continue
+        try:
+            if loc.is_checked():
+                print(f"  ✅  Ticked '{label}'")
+                return True
+            if not loc.is_enabled():
+                page.wait_for_timeout(500)             # disabled for now — may enable after a postback
+                continue
+            loc.scroll_into_view_if_needed(timeout=5000)
+            loc.click(timeout=5000)                    # real trusted click (fires the postback)
+        except Exception:
+            pass                                       # postback can detach mid-click; verify next pass
+        ni_settle(page)
+    loc = _ni_addon_locator(page, suffix)
+    try:
+        if loc is not None and loc.is_checked():
+            print(f"  ✅  Ticked '{label}'")
+            return True
+    except Exception:
+        pass
+    print(f"  ⚠️  Could not tick '{label}' — please tick it by hand.")
+    for fr in _ni_all_frames(page):
+        try:
+            lines = fr.evaluate(_NI_CHECKBOX_DUMP_JS)
+        except Exception:
+            continue
+        if lines:
+            print("  ── checkboxes on the page ──")
+            for ln in lines:
+                print(f"       {ln}")
+            break
+    return False
+
+
 def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> None:
     """Steps 34–37 (Premium Calculation section): Coverage Type, Seating capacity,
     and the two optional add-on checkboxes (UAE Extension, Roadside Assistance).
@@ -1497,9 +1504,9 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
         print("  ⚠️  Could not find the Coverage Type dropdown — please pick it by hand.")
     elif policy_type == "Third Party":
         # The real option reads e.g. 'Third Party with PA Cover to Driver & Family'.
-        want = ["THIRDPARTY", "PACOVER", "DRIVER"]
+        want_words = ["THIRDPARTY", "PACOVER", "DRIVER"]
         opts = _sel_option_texts(cov)
-        chosen = next((o for o in opts if all(w in re.sub(r"[^A-Z0-9]", "", o.upper()) for w in want)), None)
+        chosen = next((o for o in opts if all(w in re.sub(r"[^A-Z0-9]", "", o.upper()) for w in want_words)), None)
         if chosen:
             try:
                 cov.select_option(label=chosen)
@@ -1541,24 +1548,13 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
     norm = re.sub(r"[^a-z0-9]", "", (addons or "").lower())
     want = {"uae": "uae" in norm,
             "road": ("rsa" in norm or "roadside" in norm or "roadassist" in norm)}
-    for key, label in (("uae", "U.A.E. Extension"), ("road", "Road Assistance(ERA)")):
-        if not want[key]:
-            continue
-        cb = _ni_premium_controls(page, need=(key,), quiet=True)[key]   # poll — a tick may postback
-        if cb is None:
-            print(f"  ⚠️  Could not find the '{label}' checkbox — please tick it by hand.")
-            continue
-        try:
-            cb.scroll_into_view_if_needed(timeout=10000)
-            if not cb.is_checked():
-                try:
-                    cb.check()
-                except Exception:
-                    cb.click()
-            print(f"  ✅  Ticked '{label}'")
-            ni_settle(page)
-        except Exception:
-            print(f"  ⚠️  Could not tick '{label}' — please tick it by hand.")
+
+    # Tick ROAD FIRST, then U.A.E. — Road is reliable on a settled page, but ticking
+    # U.A.E. fires a postback that briefly detaches Road (the intermittent miss). Doing
+    # the fragile one before that postback removes the race; U.A.E. ticks fine either way.
+    for key, label in (("road", "Road Assistance(ERA)"), ("uae", "U.A.E. Extension")):
+        if want[key]:
+            ni_set_addon(page, key, label)   # verifies the tick actually stuck
 
 
 def ni_reset_to_motor_policy(page) -> None:
