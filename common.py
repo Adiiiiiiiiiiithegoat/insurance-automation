@@ -710,8 +710,9 @@ def read_premium(page, label: str) -> str:
         return ""
 
 
-def tameen_go_to_payments(page) -> None:
-    """Step 1: click the PAYMENTS tile on the Tameen dashboard.
+def tameen_click_dashboard_tile(page, tile_text: str) -> None:
+    """Click a tile on the Tameen dashboard by its exact text (case-insensitive),
+    e.g. "PAYMENTS" or "APPLICATIONS".
 
     SPEED: we let the BROWSER watch for the tile to appear (it checks many times
     per second and returns the instant it shows up), then click it right away with
@@ -721,21 +722,23 @@ def tameen_go_to_payments(page) -> None:
     'networkidle' (which waits for ALL background traffic to fall silent and can
     take many seconds on a live dashboard). The next step waits for its own button.
     """
-    print("\n── Tameen Step 1: Click PAYMENTS tile ──")
+    print(f"\n── Tameen Step 1: Click {tile_text} tile ──")
+    tile_upper = tile_text.strip().upper()
 
-    # Wait inside the browser until an element whose exact text is "PAYMENTS" exists.
+    # Wait inside the browser until an element whose exact text is the tile name exists.
     try:
         page.wait_for_function(
-            """() => [...document.querySelectorAll('p, span, div, a, button')]
-                .some(e => (e.innerText || '').trim() === 'PAYMENTS')""",
+            """(t) => [...document.querySelectorAll('p, span, div, a, button')]
+                .some(e => (e.innerText || '').trim().toUpperCase() === t)""",
+            arg=tile_upper,
             timeout=60000,
         )
     except Exception:
         pass  # fall through and still try to click — the fallbacks below will report if missing
 
     # Try a real Playwright click first, with a SHORT per-try timeout so it can't hang.
-    for sel in ['p:has-text("PAYMENTS")', 'span:has-text("PAYMENTS")',
-                'div:has-text("PAYMENTS")', 'a:has-text("PAYMENTS")']:
+    for sel in [f'p:has-text("{tile_text}")', f'span:has-text("{tile_text}")',
+                f'div:has-text("{tile_text}")', f'a:has-text("{tile_text}")']:
         try:
             loc = page.locator(sel)
             if loc.count() == 0:          # instant check — skip absent types with no waiting
@@ -744,24 +747,29 @@ def tameen_go_to_payments(page) -> None:
             el.scroll_into_view_if_needed(timeout=5000)
             el.click(timeout=8000)
             page.wait_for_load_state("domcontentloaded")
-            print("  ✅  Payments page loaded")
+            print(f"  ✅  {tile_text} page loaded")
             return
         except Exception:
             continue
 
-    # JavaScript fallback — click the smallest element whose exact text is "PAYMENTS".
-    result = page.evaluate("""() => {
+    # JavaScript fallback — click the smallest element whose exact text is the tile name.
+    result = page.evaluate("""(t) => {
         const all = [...document.querySelectorAll('*')];
-        let t = all.find(e => e.children.length === 0 && (e.innerText || '').trim() === 'PAYMENTS');
-        if (!t) t = all.find(e => (e.innerText || '').trim() === 'PAYMENTS');
-        if (t) { t.scrollIntoView({block:'center'}); t.click(); return 'clicked'; }
+        let m = all.find(e => e.children.length === 0 && (e.innerText || '').trim().toUpperCase() === t);
+        if (!m) m = all.find(e => (e.innerText || '').trim().toUpperCase() === t);
+        if (m) { m.scrollIntoView({block:'center'}); m.click(); return 'clicked'; }
         return 'not-found';
-    }""")
+    }""", tile_upper)
     if result == "clicked":
         page.wait_for_load_state("domcontentloaded")
-        print("  ✅  Payments page loaded (JS fallback)")
+        print(f"  ✅  {tile_text} page loaded (JS fallback)")
         return
-    raise RuntimeError("Could not find the PAYMENTS tile on the dashboard")
+    raise RuntimeError(f"Could not find the {tile_text} tile on the dashboard")
+
+
+def tameen_go_to_payments(page) -> None:
+    """Step 1: click the PAYMENTS tile on the Tameen dashboard."""
+    tameen_click_dashboard_tile(page, "PAYMENTS")
 
 
 def tameen_click_payments_by_channel(page) -> None:

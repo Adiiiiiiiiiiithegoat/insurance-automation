@@ -1841,7 +1841,9 @@ def iran_fill_additional_details(page, policy_start_date, nationality, doc_paths
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN FLOW
 # ══════════════════════════════════════════════════════════════════════════════
-def main():
+# Everything below only runs when you launch this file directly
+# (python test.py). It does NOT run when test_ni.py imports the helpers above.
+if __name__ == "__main__":
     with sync_playwright() as p:
 
         context = p.chromium.launch_persistent_context(
@@ -2262,7 +2264,3 @@ def main():
             input("\nPress ENTER in this terminal to close the browser when you're done ▶  ")
             context.close()
             print("Browser closed.")
-
-
-if __name__ == "__main__":
-    main()

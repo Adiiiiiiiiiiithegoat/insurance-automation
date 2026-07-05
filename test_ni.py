@@ -1,25 +1,31 @@
-"""NEW INDIA TESTING HARNESS — runs against PAST records on Tameen's APPLICATIONS page.
+"""
+NEW INDIA TESTING script — practice runs against PAST records on Tameen's
+APPLICATIONS page (instead of the normal Payments page).
 
-Purpose: batch-test the New India form fill with real historical data so we can
-build confidence in it, WITHOUT touching the normal Payments journey (that stays
-in test.py / production.py, untouched).
+Why this exists: to build confidence in the New India form-fill by running it
+over lots of old records. Nothing is ever saved or submitted on New India —
+the fill stops at the premium-calculation review, exactly like test.py.
 
-What it does, each round:
-  1. Tameen → APPLICATIONS tile (instead of PAYMENTS — no channel step here)
-  2. Lists ONLY the New India rows from the table, you pick one by number
-  3. Opens it with the eye icon, reads the same fields the normal run reads
-  4. Fills the New India form — STOPS before Premium Calculator, exactly like
-     the normal run. NOTHING is ever saved or submitted.
-  5. You review in the browser, come back, press ENTER → both tabs reset and
-     the list is shown again for the next record.  Type 'q' to finish.
+How to run (from this folder):    python test_ni.py
 
-Usage:   venv\\Scripts\\python.exe test_ni.py
+This script is SEPARATE from the normal journey:
+  - production.py / test.py / the control panel are untouched.
+  - Do NOT run this at the same time as test.py or the control panel — they
+    share the same browser profile (automation_profile) and Chromium only
+    allows one window on a profile at a time.
+
+Flow per record:
+  Tameen dashboard → APPLICATIONS tile → New India rows listed → eye icon →
+  read the record's fields → fill the New India form → you review on screen →
+  ENTER here to reset both tabs and move to the next record ('q' quits).
 """
 from playwright.sync_api import sync_playwright
-from common import read_field, parse_tameen_date, expiry_far_off
-
-# test.py's main flow is behind `if __name__ == "__main__"`, so this import only
-# loads the helper functions — it does NOT start the normal payments run.
+from common import (
+    read_field, parse_tameen_date, expiry_far_off, enable_download_dialogs,
+    tameen_click_dashboard_tile,
+)
+# The New India helpers live in test.py; importing them does NOT start test.py's
+# own browser flow (that part is behind its __main__ guard).
 from test import (
     NI_LOGIN_URL,
     ni_login_if_needed, ni_go_to_motor_policy,
@@ -30,134 +36,74 @@ from test import (
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TAMEEN: Applications page navigation
+#  TAMEEN: the APPLICATIONS table
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _tameen_wait_for_table(page, timeout=60000) -> None:
-    """The Applications table appears after a short loading delay — wait for it."""
-    page.wait_for_function(
-        """() => document.querySelectorAll('table tbody tr').length > 0
-              || document.querySelectorAll('[role="row"]').length > 1""",
-        timeout=timeout,
-    )
-    page.wait_for_timeout(1500)   # let the rows finish rendering
-
-
-def _tameen_table_showing(page) -> bool:
-    try:
-        return page.evaluate(
-            """() => document.querySelectorAll('table tbody tr').length > 0
-                  || document.querySelectorAll('[role="row"]').length > 1"""
-        )
-    except Exception:
-        return False
-
-
-def tameen_go_to_applications(page) -> None:
-    """Click the APPLICATIONS tile on the Tameen dashboard, then wait for the
-    records table to load. Same click strategy as the PAYMENTS tile in common.py."""
-    print("\n── Tameen: Click APPLICATIONS tile ──")
-    try:
-        page.wait_for_function(
-            """() => [...document.querySelectorAll('p, span, div, a, button')]
-                .some(e => (e.innerText || '').trim().toUpperCase() === 'APPLICATIONS')""",
-            timeout=60000,
-        )
-    except Exception:
-        pass  # fall through — the fallbacks below will report if it's missing
-
-    for sel in ['p:has-text("APPLICATIONS")', 'span:has-text("APPLICATIONS")',
-                'div:has-text("APPLICATIONS")', 'a:has-text("APPLICATIONS")']:
-        try:
-            loc = page.locator(sel)
-            if loc.count() == 0:
-                continue
-            el = loc.last
-            el.scroll_into_view_if_needed(timeout=5000)
-            el.click(timeout=8000)
-            page.wait_for_load_state("domcontentloaded")
-            _tameen_wait_for_table(page)
-            print("  ✅  Applications page loaded")
-            return
-        except Exception:
-            continue
-
-    # JS fallback — click the smallest element whose text is exactly APPLICATIONS.
-    result = page.evaluate("""() => {
-        const all = [...document.querySelectorAll('*')];
-        const is = e => (e.innerText || '').trim().toUpperCase() === 'APPLICATIONS';
-        let t = all.find(e => e.children.length === 0 && is(e));
-        if (!t) t = all.find(is);
-        if (t) { t.scrollIntoView({block:'center'}); t.click(); return 'clicked'; }
-        return 'not-found';
-    }""")
-    if result == "clicked":
-        page.wait_for_load_state("domcontentloaded")
-        _tameen_wait_for_table(page)
-        print("  ✅  Applications page loaded (JS fallback)")
-        return
-    raise RuntimeError("Could not find the APPLICATIONS tile on the dashboard")
-
-
-def tameen_reset_to_applications(page) -> None:
-    """Send Tameen back to the Applications table using in-app Back navigation
-    (no full reload, so the OTP session is preserved). Falls back to re-clicking
-    the APPLICATIONS tile from the dashboard."""
-    print("\n── Tameen reset: returning to the Applications page ──")
-    for _ in range(4):
-        if _tameen_table_showing(page):
-            print("  ✅  Back on the Applications table")
-            return
-        try:
-            page.go_back(wait_until="domcontentloaded")
-        except Exception:
-            break
-        page.wait_for_timeout(800)
-    if _tameen_table_showing(page):
-        print("  ✅  Back on the Applications table")
-        return
-    try:
-        tameen_go_to_applications(page)
-    except Exception:
-        print("  ⚠️  Could not get back to Applications — please navigate by hand.")
-
-
-def tameen_select_ni_and_click_eye(page):
-    """List ONLY the New India rows of the Applications table and ask which one
-    to open (same row-reading strategy as the normal payments flow).
-
-    Returns ("OK", "<row text>") after opening a record,
-    or      ("REFRESH", None)    if you typed 0 to re-read the table.
-    """
-    print("\n── Tameen: Select which New India record to open ──")
-    page.wait_for_timeout(1500)
-
-    rows_data = page.evaluate("""
-        () => {
-            const tableRows = document.querySelectorAll('table tbody tr');
-            if (tableRows.length > 0) {
-                const headers = Array.from(document.querySelectorAll('table thead th, table thead td'))
-                    .map(h => h.innerText.trim().toLowerCase());
-                const rows = Array.from(tableRows).map((row, domIdx) => {
-                    const cells = Array.from(row.querySelectorAll('td')).slice(1);
-                    return { text: cells.map(c => c.innerText.trim()).filter(Boolean).join('  |  '),
-                             domIdx, cells: cells.map(c => c.innerText.trim()) };
-                });
-                return { headers, rows };
-            }
-            const headerRow = document.querySelector('[role="row"]:has([role="columnheader"])');
-            const headers = headerRow ? Array.from(headerRow.querySelectorAll('[role="columnheader"]'))
-                    .map(h => h.innerText.trim().toLowerCase()) : [];
-            const allRows = Array.from(document.querySelectorAll('[role="row"], [class*="tr"]'))
-                .filter(row => !row.querySelector('[role="columnheader"], th, [class*="th"]') && !row.closest('thead'));
+# Same table-reading JavaScript as test.py's row picker — the Applications page
+# uses the same kind of table as the Payments page (company column + eye icon).
+_READ_ROWS_JS = """
+    () => {
+        function cellsOf(row, cellSel){ return Array.from(row.querySelectorAll(cellSel)); }
+        const tableRows = document.querySelectorAll('table tbody tr');
+        if (tableRows.length > 0) {
+            const headers = Array.from(document.querySelectorAll('table thead th, table thead td'))
+                .map(h => h.innerText.trim().toLowerCase());
+            const rows = Array.from(tableRows).map((row, domIdx) => {
+                const cells = cellsOf(row, 'td').slice(1);
+                return { text: cells.map(c => c.innerText.trim()).filter(Boolean).join('  |  '),
+                         domIdx, cells: cells.map(c => c.innerText.trim()) };
+            });
+            return { type:'html', headers, rows };
+        }
+        const headerRow = document.querySelector('[role="row"]:has([role="columnheader"])');
+        const headers = headerRow ? Array.from(headerRow.querySelectorAll('[role="columnheader"]'))
+                .map(h => h.innerText.trim().toLowerCase()) : [];
+        const allRows = Array.from(document.querySelectorAll('[role="row"], [class*="tr"]'))
+            .filter(row => !row.querySelector('[role="columnheader"], th, [class*="th"]') && !row.closest('thead'));
+        if (allRows.length > 0) {
             const rows = Array.from(allRows).map((row, domIdx) => {
                 const cells = Array.from(row.querySelectorAll('[role="cell"], [class*="td"], td')).slice(1);
                 return { text: cells.map(c => c.innerText.trim()).filter(Boolean).join('  |  '),
                          domIdx, cells: cells.map(c => c.innerText.trim()) };
             });
-            return { headers, rows };
+            return { type:'div', headers, rows };
         }
-    """)
+        return { type:'none', headers:[], rows:[] };
+    }
+"""
+
+_CLICK_EYE_JS = """
+    (idx) => {
+        const tableRows = document.querySelectorAll('table tbody tr');
+        if (tableRows.length > idx) {
+            const firstCell = tableRows[idx].querySelector('td');
+            if (firstCell) {
+                (firstCell.querySelector('button')||firstCell.querySelector('[role="button"]')||
+                 firstCell.querySelector('a')||firstCell.querySelector('svg')||
+                 firstCell.querySelector('i')||firstCell).click();
+                return 'clicked';
+            }
+        }
+        const allRows = Array.from(document.querySelectorAll('[role="row"], [class*="tr"]'))
+            .filter(row => !row.querySelector('[role="columnheader"], th, [class*="th"]') && !row.closest('thead'));
+        if (allRows.length > idx) {
+            const firstCell = allRows[idx].querySelector('[role="cell"], [class*="td"], td') || allRows[idx].children[0];
+            if (firstCell) {
+                (firstCell.querySelector('button')||firstCell.querySelector('[role="button"]')||
+                 firstCell.querySelector('a')||firstCell.querySelector('svg')||
+                 firstCell.querySelector('i')||firstCell).click();
+                return 'clicked';
+            }
+        }
+        return null;
+    }
+"""
+
+
+def _list_ni_rows(page):
+    """Read the Applications table and return only the New India rows."""
+    page.wait_for_timeout(1500)
+    rows_data = page.evaluate(_READ_ROWS_JS)
     if not rows_data or not rows_data.get("rows"):
         raise RuntimeError("Could not read any table rows on the Applications page.")
 
@@ -165,75 +111,123 @@ def tameen_select_ni_and_click_eye(page):
     all_rows = rows_data["rows"]
     company_col_idx = next((i for i, h in enumerate(headers[1:], start=0) if "company" in h.lower()), None)
 
-    def is_new_india(r):
+    ni_rows = []
+    for r in all_rows:
         if company_col_idx is not None and company_col_idx < len(r["cells"]):
             cell_val = r["cells"][company_col_idx]
         else:
             cell_val = r["text"]
-        return "new india" in cell_val.lower()
+        if "new india" in cell_val.lower():
+            ni_rows.append(r)
+    return ni_rows, len(all_rows)
 
-    filtered = [r for r in all_rows if is_new_india(r)]
-    if not filtered:
-        print(f"  ⚠️  No New India rows found on this page ({len(all_rows)} rows total).")
-        print("      Showing ALL rows so you can check the company names:")
-        filtered = all_rows
 
-    print("\n" + "=" * 70)
-    print(f"  NEW INDIA RECORDS ON THIS PAGE  ({len(filtered)} of {len(all_rows)} total rows)")
-    print("=" * 70)
-    for i, r in enumerate(filtered, start=1):
-        print(f"  [{i:>2}]  {r['text'] or '(no text)'}")
-    print("-" * 70)
-    print("  [ 0]  🔄  Refresh (re-read the table — e.g. after changing page/filter by hand)")
-    print("=" * 70)
+def tameen_pick_next_ni_record(page, done):
+    """Show the New India rows (marking the ones already tested this run) and
+    open the next untested one. ENTER = open it, a number = open that row
+    instead, 'r' = re-read the table, 'q' = quit.
 
+    Returns ("OK", "<row text>") after the record is opened, or ("QUIT", None).
+    """
     while True:
-        raw = input(f"\nEnter row number to open (1–{len(filtered)}), or 0 to refresh: ").strip()
-        try:
-            choice = int(raw)
-        except ValueError:
-            print("  Please enter a valid number in range.")
+        print("\n── Tameen: New India records on the Applications page ──")
+        ni_rows, total = _list_ni_rows(page)
+        if not ni_rows:
+            print(f"  ⚠️  No New India rows found ({total} rows on the page).")
+            if input("  Press ENTER to re-read the table, or 'q' to quit ▶  ").strip().lower() == "q":
+                return "QUIT", None
             continue
-        if choice == 0:
-            return "REFRESH", None
-        if 1 <= choice <= len(filtered):
-            break
-        print("  Please enter a valid number in range.")
 
-    selected = filtered[choice - 1]
-    idx      = selected["domIdx"]
-    print(f"\n  Opening: {selected['text'] or '(no text)'}")
+        pending = [r for r in ni_rows if r["text"] not in done]
+        next_row = pending[0] if pending else None
 
-    result = page.evaluate("""
-        (idx) => {
-            const tableRows = document.querySelectorAll('table tbody tr');
-            let row = null;
-            if (tableRows.length > idx) row = tableRows[idx];
-            else {
-                const allRows = Array.from(document.querySelectorAll('[role="row"], [class*="tr"]'))
-                    .filter(r => !r.querySelector('[role="columnheader"], th, [class*="th"]') && !r.closest('thead'));
-                if (allRows.length > idx) row = allRows[idx];
-            }
-            if (!row) return null;
-            const firstCell = row.querySelector('td, [role="cell"], [class*="td"]') || row.children[0];
-            if (!firstCell) return null;
-            (firstCell.querySelector('button') || firstCell.querySelector('[role="button"]') ||
-             firstCell.querySelector('a') || firstCell.querySelector('svg') ||
-             firstCell.querySelector('i') || firstCell).click();
-            return 'clicked';
-        }
-    """, idx)
-    if result:
+        print("\n" + "=" * 70)
+        print(f"  NEW INDIA RECORDS  ({len(ni_rows)} of {total} rows — {len(done)} tested this run)")
+        print("=" * 70)
+        for i, r in enumerate(ni_rows, start=1):
+            if r is next_row:
+                mark = "→ next "
+            elif r["text"] in done:
+                mark = "✓ done "
+            else:
+                mark = "       "
+            print(f"  [{i:>2}] {mark} {r['text'] or '(no text)'}")
+        print("=" * 70)
+
+        if next_row is None:
+            print("  🎉  Every New India row on this page has been tested this run.")
+            raw = input("  Type a number to re-test one, 'r' to re-read the table, or 'q' to quit ▶  ").strip().lower()
+        else:
+            raw = input("  ENTER = open the '→ next' row, or a number, 'r' = re-read, 'q' = quit ▶  ").strip().lower()
+
+        if raw == "q":
+            return "QUIT", None
+        if raw == "r":
+            continue
+        if raw == "":
+            selected = next_row
+            if selected is None:
+                continue
+        else:
+            try:
+                choice = int(raw)
+            except ValueError:
+                print("  Please enter a number, ENTER, 'r' or 'q'.")
+                continue
+            if not 1 <= choice <= len(ni_rows):
+                print("  Number out of range.")
+                continue
+            selected = ni_rows[choice - 1]
+
+        print(f"\n  Opening: {selected['text'] or '(no text)'}")
+        result = page.evaluate(_CLICK_EYE_JS, selected["domIdx"])
+        if not result:
+            raise RuntimeError("Could not click the eye icon on that row.")
         page.wait_for_load_state("domcontentloaded")
         print("  ✅  Opened record")
         return "OK", selected["text"]
-    raise RuntimeError(f"Could not open row {choice}.")
+
+
+def _on_applications_table(page) -> bool:
+    """True when the Applications records table is showing: a table header that
+    mentions 'company' plus at least one data row underneath it."""
+    try:
+        return page.evaluate("""() => {
+            const heads = [...document.querySelectorAll('table thead th, table thead td, [role="columnheader"]')];
+            if (!heads.some(h => (h.innerText || '').toLowerCase().includes('company'))) return false;
+            return document.querySelectorAll('table tbody tr, [role="row"]').length > 0;
+        }""")
+    except Exception:
+        return False
+
+
+def tameen_reset_to_applications(page) -> None:
+    """Send Tameen back to the Applications table (browser Back, like the
+    Payments reset). If Back overshoots to the dashboard, click the tile again."""
+    print("\n── Tameen reset: returning to the Applications page ──")
+    for _ in range(4):
+        if _on_applications_table(page):
+            print("  ✅  Back on the Applications page")
+            return
+        try:
+            page.go_back(wait_until="domcontentloaded")
+        except Exception:
+            break
+        page.wait_for_timeout(800)
+    if _on_applications_table(page):
+        print("  ✅  Back on the Applications page")
+        return
+    try:
+        tameen_click_dashboard_tile(page, "APPLICATIONS")
+    except Exception:
+        print("  ⚠️  Could not get back to the Applications page — navigate there by hand,")
+        print("      then continue in this terminal.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MAIN FLOW  (Tameen + New India tabs only — MIC and IRAN are not opened)
+#  MAIN FLOW  (Tameen + New India tabs only)
 # ══════════════════════════════════════════════════════════════════════════════
-def main():
+if __name__ == "__main__":
     with sync_playwright() as p:
 
         context = p.chromium.launch_persistent_context(
@@ -254,13 +248,16 @@ def main():
         print("Opening New India website...")
         ni_page = context.new_page()
         ni_page.set_default_timeout(120000)
-        ni_page.goto(NI_LOGIN_URL, timeout=60000)
 
-        # Auto-accept native browser dialogs (e.g. beforeunload) on both tabs.
+        # Auto-accept native browser dialogs (e.g. beforeunload "Leave site?").
         tameen_page.on("dialog", lambda dialog: dialog.accept())
         ni_page.on("dialog", lambda dialog: dialog.accept())
+        enable_download_dialogs(context)
 
+        ni_page.goto(NI_LOGIN_URL, timeout=60000)
         tameen_page.bring_to_front()
+
+        done = set()   # row texts already tested this run
 
         try:
             print("\n" + "=" * 60)
@@ -272,24 +269,26 @@ def main():
             input("\nPress ENTER once you are logged in to Tameen ▶  ")
 
             tameen_page.bring_to_front()
-            tameen_go_to_applications(tameen_page)
+            print("\nAutomating Tameen navigation...")
+            tameen_click_dashboard_tile(tameen_page, "APPLICATIONS")
 
-            # ── PER-RECORD TEST LOOP ──────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════════
+            #  PER-RECORD TESTING LOOP
+            # ══════════════════════════════════════════════════════════════════
             while True:
                 record_text = None
                 prepared    = None
 
                 try:
-                    # read_field uses the clipboard, which needs this tab focused.
+                    # read_field reads via the clipboard, which needs this tab in front.
                     tameen_page.bring_to_front()
 
-                    while True:
-                        status, record_text = tameen_select_ni_and_click_eye(tameen_page)
-                        if status != "REFRESH":
-                            break
-                        tameen_reset_to_applications(tameen_page)
+                    status, record_text = tameen_pick_next_ni_record(tameen_page, done)
+                    if status == "QUIT":
+                        break
+                    done.add(record_text)
 
-                    # ── Read the record — same fields as the normal New India run ──
+                    # ── TAMEEN: read the record's fields (same as test.py) ──────
                     print("\nReading data from Tameen record...")
                     first_name   = read_field(tameen_page, "First Name")
                     last_name    = read_field(tameen_page, "Last Name")
@@ -308,6 +307,22 @@ def main():
 
                     full_name = (first_name + " " + last_name).strip()
 
+                    # Policy type: from Product Name; if that's blank on this record
+                    # (like the Mobileapp channel), fall back to a Policy Type field.
+                    type_source = product_name
+                    if not type_source:
+                        for lbl in ("Policy Type", "Policy type", "Cover Type", "Coverage Type"):
+                            pt = read_field(tameen_page, lbl)
+                            if pt:
+                                type_source = pt
+                                print(f"  → Product Name blank: using Policy Type '{pt}'")
+                                break
+
+                    expiry_flagged = expiry_far_off(parse_tameen_date(prev_expiry))
+                    if expiry_flagged:
+                        print(f"\n⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
+
+                    # ── extra fields New India needs ────────────────────────────
                     mileage = ""
                     for lbl in ("Mileage Est", "Mileage", "Mileage Estimate", "Odometer"):
                         mileage = read_field(tameen_page, lbl)
@@ -325,23 +340,11 @@ def main():
                             break
                     tameen_make = read_field(tameen_page, "Make")
                     tameen_model = ""
-                    for lbl in ("Modal", "Model"):
+                    for lbl in ("Modal", "Model"):   # 'Modal' is Tameen's real (misspelled) label
                         tameen_model = read_field(tameen_page, lbl)
                         if tameen_model:
                             break
                     addons = read_tameen_addons(tameen_page)
-
-                    # Policy type: Product Name first; if blank (some records keep it
-                    # empty, like Mobileapp does on Payments), fall back to a Policy
-                    # Type field, then to the words in the row itself.
-                    type_source = product_name
-                    if not type_source:
-                        for lbl in ("Policy Type", "Policy type", "Cover Type", "Coverage Type"):
-                            type_source = read_field(tameen_page, lbl)
-                            if type_source:
-                                break
-                    if not type_source:
-                        type_source = record_text or ""
 
                     pn = (type_source or "").lower().replace(" ", "")
                     if "thirdparty" in pn:
@@ -353,8 +356,6 @@ def main():
                         print(f"  ⚠️  Could not tell policy type from '{type_source}' — "
                               "Coverage Type will be left for you to pick.")
 
-                    expiry_flagged = expiry_far_off(parse_tameen_date(prev_expiry))
-                    # Past records will usually trip this — it's informational here.
                     reg_no          = reformat_plate_for_ni(vehicle_no)
                     commencing_date = compute_commencing_date_ni(prev_expiry)
 
@@ -372,7 +373,7 @@ def main():
                         "Add-ons"       : addons or "(none read)",
                     }
                     print("\n" + "=" * 60)
-                    print("📋  VALUES PREPARED FOR NEW INDIA  (TEST RUN)")
+                    print("📋  VALUES PREPARED FOR NEW INDIA (TEST RUN)")
                     print("=" * 60)
                     for label, value in prepared.items():
                         print(f"  {label:<16}: {value}")
@@ -396,14 +397,14 @@ def main():
                         print(f"   Record: {record_text}")
                     print("=" * 60)
 
-                    ans = input("\nReview the result. Press ENTER to reset and test "
-                                "another record, or type 'q' then ENTER to finish ▶  ")
+                    ans = input("\nReview the result. Press ENTER to reset the tabs and "
+                                "test the next record, or type 'q' then ENTER to finish ▶  ")
                     if ans.strip().lower() == "q":
                         break
 
                 except Exception as e:
                     print("\n" + "=" * 60)
-                    print("❌  THIS TEST HIT A PROBLEM")
+                    print("❌  THIS TEST RECORD HIT A PROBLEM")
                     print("=" * 60)
                     print(f"  Reason: {e}")
                     print("-" * 60)
@@ -420,12 +421,12 @@ def main():
                     print("    then continue to the next record.")
                     print("=" * 60)
 
-                    ans = input("\nPress ENTER to reset and continue to the next record, "
+                    ans = input("\nPress ENTER to reset the tabs and continue, "
                                 "or type 'q' then ENTER to finish ▶  ")
                     if ans.strip().lower() == "q":
                         break
 
-                # Reset both tabs for the next round.
+                # Reset both tabs for the next record.
                 ni_reset_to_motor_policy(ni_page)
                 tameen_reset_to_applications(tameen_page)
 
@@ -435,10 +436,10 @@ def main():
             print("=" * 60)
 
         finally:
+            if done:
+                print(f"\nTested this run ({len(done)} record{'s' if len(done) != 1 else ''}):")
+                for t in done:
+                    print(f"  • {t}")
             input("\nPress ENTER in this terminal to close the browser when you're done ▶  ")
             context.close()
             print("Browser closed.")
-
-
-if __name__ == "__main__":
-    main()
