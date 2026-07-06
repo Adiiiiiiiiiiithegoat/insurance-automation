@@ -73,6 +73,10 @@ IRAN_ADDON_MAP = {
     "pab passenger": "Pab Cover To Passenger",
 }
 
+# Always ticked on every IRAN policy regardless of Tameen add-ons — standard
+# PAB cover for driver (OMR 1.000) and passengers (OMR 3.000), not optional extras.
+IRAN_PLAN_ALWAYS_TICK = ["PAB Cover for Driver Only", "Pab Cover To Passenger"]
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TAMEEN: select-and-open the record (MIC + New India variant)
@@ -509,22 +513,27 @@ def iran_click_button(page, text: str) -> bool:
     return False
 
 
-def iran_dismiss_popup_ok(page) -> bool:
-    """Close an error/info dialog by clicking its OK / Ok / Close button. Returns
-    False (no-op) if no popup is showing. Used after 'No, Manual Entry'."""
-    for sel in ['button.swal2-confirm', '.swal2-actions button',
-                'button:has-text("OK")', 'button:has-text("Ok")',
-                'button:has-text("Close")', '.modal-footer button',
-                '.modal button:has-text("OK")']:
-        try:
-            b = page.locator(sel).first
-            if b.count() > 0 and b.is_visible():
-                b.click()
-                print("  ✅  Closed a popup (OK/Close)")
-                iran_settle(page)
-                return True
-        except Exception:
-            continue
+def iran_dismiss_popup_ok(page, tries: int = 8) -> bool:
+    """Close an error/info dialog by clicking its OK / Ok / Close button. Polls for
+    the dialog since it animates in a moment after the triggering click — checking
+    only once missed it (same lesson as mic_accept_confirm_dialog; see
+    errorlog.md.txt entry 1). Returns False if no popup ever shows up."""
+    selectors = ['button.swal2-confirm', '.swal2-actions button',
+                 'button:has-text("OK")', 'button:has-text("Ok")',
+                 'button:has-text("Close")', '.modal-footer button',
+                 '.modal button:has-text("OK")']
+    for _ in range(tries):
+        for sel in selectors:
+            try:
+                b = page.locator(sel).first
+                if b.count() > 0 and b.is_visible():
+                    b.click()
+                    print("  ✅  Closed a popup (OK/Close)")
+                    iran_settle(page)
+                    return True
+            except Exception:
+                continue
+        page.wait_for_timeout(300)
     return False
 
 
@@ -534,8 +543,8 @@ def iran_dismiss_popup_ok(page) -> bool:
 IRAN_DOC_LABELS = {
     "civil_id_front": ["Civil ID Front", "Civil Id Front"],
     "civil_id_back":  ["Civil ID Back", "Civil Id Back"],
-    "license_front":  ["Driving License Front", "License Front", "DL Front"],
-    "license_back":   ["Driving License Back", "License Back", "DL Back"],
+    "license_front":  ["License ID Front", "Driving License Front", "License Front", "DL Front"],
+    "license_back":   ["License ID Back", "Driving License Back", "License Back", "DL Back"],
 }
 IRAN_UPLOAD_LABELS = {
     "civil_id_front": "Civil Id Front",
@@ -565,12 +574,9 @@ def _iran_guess_ext(url: str, content_type: str) -> str:
     return ".jpg"
 
 
-def _tameen_doc_url(tameen_page, labels):
-    """Find a document's image URL in Tameen's Document Details section, trying the
-    given label spellings. First reads an href/src; if none, clicks the element and
-    catches the new tab the image opens in. Returns the URL string or None, and
-    prints exactly what it found (these selectors are the most likely thing to tweak)."""
-    # 1) Read an href/src directly from the labelled element or its row.
+def _tameen_doc_href(tameen_page, labels):
+    """Read a plain href/src straight off the labelled row, if the element happens
+    to be a real link (rare — most 'View' links mint a one-time URL via JS instead)."""
     for lab in labels:
         try:
             url = tameen_page.evaluate("""(lab) => {
@@ -594,31 +600,138 @@ def _tameen_doc_url(tameen_page, labels):
                 return url
         except Exception:
             continue
-    # 2) Click the element and catch the new tab that opens with the image.
-    for lab in labels:
-        try:
-            target = tameen_page.locator(f'xpath=//*[normalize-space(.)="{lab}"]').first
-            if target.count() == 0:
-                continue
-            with tameen_page.context.expect_page(timeout=8000) as np:
-                target.scroll_into_view_if_needed(timeout=6000)
-                target.click()
-            newpg = np.value
-            try:
-                newpg.wait_for_load_state("domcontentloaded")
-            except Exception:
-                pass
-            url = newpg.url
-            try:
-                newpg.close()
-            except Exception:
-                pass
-            if url and url.lower() != "about:blank":
-                print(f"  🔎  '{lab}': found URL via new tab → {url}")
-                return url
-        except Exception:
-            continue
     return None
+
+
+def _iran_find_doc_click_target(tameen_page, lab):
+    """Find the element to click for a document row labelled `lab`.
+
+    Confirmed via the Document Details dump: the section is a flat repeating
+    sequence of leaf text — 'Document Type | <name> | Preview | View' — not a
+    table with row-scoped cells, so proximity/ancestor searches (tr/div) don't
+    reliably bracket a row. Instead: collect all leaf text under the 'Document
+    Details' heading in DOM order, find the leaf equal to `lab`, then return
+    the 'View' leaf a few positions after it (real click event bubbles to
+    whatever link/handler wraps that leaf, so it doesn't matter that the leaf
+    itself has no href). Falls back to 'Preview' if no 'View' follows.
+    Returns a JSHandle (use .as_element(), may be None)."""
+    return tameen_page.evaluate_handle("""(lab) => {
+        const norm = s => (s||'').replace(/\\s+/g,' ').trim();
+        const all = [...document.querySelectorAll('*')];
+        const header = all.find(e => norm(e.innerText) === 'Document Details');
+        if (!header) return null;
+        const hy = header.getBoundingClientRect().top;
+        const leaves = all
+            .filter(e => e.children.length === 0)
+            .map(e => ({el: e, t: norm(e.innerText), y: e.getBoundingClientRect().top}))
+            .filter(x => x.t && x.y > hy);
+        const idx = leaves.findIndex(x => x.t === lab);
+        if (idx === -1) return null;
+        for (let i = idx + 1; i < Math.min(idx + 5, leaves.length); i++) {
+            if (leaves[i].t.toLowerCase() === 'view') return leaves[i].el;
+        }
+        for (let i = idx + 1; i < Math.min(idx + 5, leaves.length); i++) {
+            if (leaves[i].t.toLowerCase() === 'preview') return leaves[i].el;
+        }
+        return null;
+    }""", lab)
+
+
+def _tameen_doc_details_dump(tameen_page):
+    """Diagnostic only: when every label lookup fails, print the raw text under
+    the 'Document Details' heading so the next run's console shows the real
+    labels instead of guessing blind (same technique as read_tameen_addons)."""
+    try:
+        text = tameen_page.evaluate("""() => {
+            const all = [...document.querySelectorAll('*')];
+            const header = all.find(e => (e.innerText || '').trim() === 'Document Details');
+            if (!header) return '(no "Document Details" heading found on this page)';
+            const hy = header.getBoundingClientRect().top;
+            const out = [];
+            for (const e of all) {
+                if (e.children.length !== 0) continue;
+                const y = e.getBoundingClientRect().top;
+                if (y <= hy || y > hy + 600) continue;
+                const t = (e.innerText || '').trim();
+                if (t) out.push(t);
+            }
+            return out.join(' | ');
+        }""")
+    except Exception:
+        text = "(dump failed)"
+    print(f"  🔎  Document Details raw content: {text}")
+
+
+def _iran_capture_doc_bytes(tameen_page, labels):
+    """Click the 'View' link and grab the document bytes via a route intercept,
+    instead of reading them off the navigation response afterwards.
+
+    The click-target fix works (tab opens at the right elocker URL), but
+    listening for the "response" event and calling resp.body() consistently
+    came back empty. Root cause: these documents are images/PDFs that Chrome's
+    own viewer consumes internally once it takes over the navigation, so by the
+    time our handler calls resp.body() the stream chrome already read is gone
+    (a known Playwright limitation — response.body() often fails for resources
+    handed to a native viewer/plugin). Fix: use context.route() to intercept
+    the request ourselves — route.fetch() performs the ONE request that ever
+    happens (so no "second GET invalidates a one-time token" risk either),
+    we grab the bytes from that, then route.fulfill() hands the same response
+    back to the browser so the tab still renders normally.
+    Returns (bytes, url, content_type) or (None, None, None)."""
+    ctx = tameen_page.context
+    pattern = "**/elocker/document/**"
+    captured = {}
+
+    def handle_route(route):
+        try:
+            resp = route.fetch()
+            captured["body"] = resp.body()
+            captured["ctype"] = resp.headers.get("content-type", "")
+            route.fulfill(response=resp)
+        except Exception:
+            try:
+                route.continue_()
+            except Exception:
+                pass
+
+    ctx.route(pattern, handle_route)
+    try:
+        for lab in labels:
+            try:
+                handle = _iran_find_doc_click_target(tameen_page, lab)
+                target = handle.as_element()
+                if target is None:
+                    continue
+                captured.clear()
+                with ctx.expect_page(timeout=8000) as np:
+                    target.scroll_into_view_if_needed(timeout=6000)
+                    target.click()
+                newpg = np.value
+                try:
+                    newpg.wait_for_load_state("domcontentloaded", timeout=8000)
+                except Exception:
+                    pass
+                newpg.wait_for_timeout(500)  # let the route handler settle
+                url = newpg.url
+                body = captured.get("body")
+                ctype = captured.get("ctype", "")
+                try:
+                    newpg.close()
+                except Exception:
+                    pass
+                if body:
+                    print(f"  🔎  '{lab}': captured {len(body)} bytes via route intercept")
+                    return body, url, ctype
+                if url and url.lower() != "about:blank":
+                    print(f"  ⚠️  '{lab}': tab opened ({url}) but no response body captured")
+            except Exception:
+                continue
+    finally:
+        try:
+            ctx.unroute(pattern, handle_route)
+        except Exception:
+            pass
+    return None, None, None
 
 
 def tameen_download_iran_documents(tameen_page, record_tag: str) -> dict:
@@ -633,23 +746,35 @@ def tameen_download_iran_documents(tameen_page, record_tag: str) -> dict:
     os.makedirs(folder, exist_ok=True)
     for key, labels in IRAN_DOC_LABELS.items():
         pretty = IRAN_DOC_PRETTY[key]
-        url = _tameen_doc_url(tameen_page, labels)
-        if not url:
+        body, url, ctype = None, None, ""
+
+        # 1) plain href/src, if the row happens to have one (cheap, rarely present)
+        href = _tameen_doc_href(tameen_page, labels)
+        if href:
+            try:
+                resp = tameen_page.context.request.get(href)
+                if resp.ok:
+                    body, url, ctype = resp.body(), href, resp.headers.get("content-type", "")
+            except Exception:
+                pass
+
+        # 2) fall back to capturing the view-tab's own response (handles one-time
+        #    e-locker tokens that a second request can't re-fetch)
+        if not body:
+            body, url, ctype = _iran_capture_doc_bytes(tameen_page, labels)
+
+        if not body:
             print(f"  ⚠️  Could not find {pretty} in Document Details — upload it by hand on IRAN.")
             continue
-        try:
-            resp = tameen_page.context.request.get(url)
-            if not resp.ok:
-                print(f"  ⚠️  {pretty}: download failed (HTTP {resp.status}) — upload by hand. URL: {url}")
-                continue
-            ext = _iran_guess_ext(url, resp.headers.get("content-type", ""))
-            path = os.path.abspath(os.path.join(folder, f"{key}{ext}"))
-            with open(path, "wb") as f:
-                f.write(resp.body())
-            out[key] = path
-            print(f"  ✅  downloaded {pretty} -> {path}")
-        except Exception as e:
-            print(f"  ⚠️  {pretty}: error downloading ({e}) — upload by hand. URL: {url}")
+
+        ext = _iran_guess_ext(url or "", ctype)
+        path = os.path.abspath(os.path.join(folder, f"{key}{ext}"))
+        with open(path, "wb") as f:
+            f.write(body)
+        out[key] = path
+        print(f"  ✅  downloaded {pretty} -> {path}")
+    if not any(out.values()):
+        _tameen_doc_details_dump(tameen_page)
     return out
 
 
@@ -867,18 +992,25 @@ def iran_fill_plan_details(page, addons) -> None:
     add-ons (via IRAN_ADDON_MAP), then Select Plan → Next."""
     print("\n── IRAN Tab 2: Plan Details (Choose Your Plan) ──")
     addons_l = (addons or "").lower()
+
+    always_ticked = [label for label in IRAN_PLAN_ALWAYS_TICK if iran_tick_plan_addon(page, label)]
+    if always_ticked:
+        print(f"  ✅  Mandatory PAB checkboxes ticked: {', '.join(always_ticked)}")
+
     if not addons:
-        print("  ℹ️  No Tameen add-ons read — no plan checkboxes to tick.")
+        print("  ℹ️  No Tameen add-ons read — no optional plan checkboxes to tick.")
     else:
         print(f"  → Tameen add-ons read: {addons}")
         ticked = []
         for keyword, checkbox_label in IRAN_ADDON_MAP.items():
+            if checkbox_label in IRAN_PLAN_ALWAYS_TICK:
+                continue  # already handled unconditionally above
             if keyword in addons_l and iran_tick_plan_addon(page, checkbox_label):
                 ticked.append(checkbox_label)
         if ticked:
-            print(f"  ✅  Plan checkboxes ticked: {', '.join(sorted(set(ticked)))}")
+            print(f"  ✅  Optional plan checkboxes ticked: {', '.join(sorted(set(ticked)))}")
         else:
-            print("  ⚠️  No plan checkbox matched the Tameen add-ons — tick by hand if needed.")
+            print("  ⚠️  No optional plan checkbox matched the Tameen add-ons.")
     iran_click_button(page, "Select Plan")
     iran_click_button(page, "Next")
 
