@@ -422,32 +422,43 @@ def iran_select(page, label: str, option_text: str) -> bool:
         return False
 
 
-def iran_set_toggle_yes(page, label: str) -> bool:
-    """Set a Yes/No toggle to Yes — only clicks it if it currently reads 'No'."""
+def iran_set_toggle_yes(page, label: str, visible_label: str = "UAE Cover") -> bool:
+    """Set the bootstrap-toggle with id=`label` to Yes/on. Its real <input> is hidden,
+    so a plain click can't reach it — we drive the plugin's own API,
+    $('#id').bootstrapToggle('on'), which flips the UI and fires change."""
     try:
-        ctrl = page.locator(
-            f'xpath=//*[contains(normalize-space(text()),"{label}")]'
-            f'/following::*[contains(@class,"switch") or contains(@class,"toggle") or @role="switch"][1]'
-        ).first
-        if ctrl.count() == 0:
-            ctrl = page.locator(
-                f'xpath=//*[contains(normalize-space(text()),"{label}")]/following::*[normalize-space(.)="No"][1]'
-            ).first
-        if ctrl.count() == 0:
-            print(f"  ⚠️  Could not find the '{label}' toggle — please set it to Yes by hand.")
-            return False
-        txt = (ctrl.inner_text() or "").strip().lower()
-        if "yes" in txt and "no" not in txt:
-            print(f"  ℹ️  '{label}' is already Yes")
-            return True
-        ctrl.scroll_into_view_if_needed(timeout=8000)
-        ctrl.click()
-        print(f"  ✅  Set '{label}' = Yes")
+        result = page.evaluate(
+            """(id) => {
+                const el = document.getElementById(id);
+                if (!el) return 'missing';
+                if (el.checked) return 'already';
+                const $ = window.jQuery;
+                if ($ && $(el).bootstrapToggle) {
+                    $(el).bootstrapToggle('on');
+                } else {                              // plugin gone: click the wrapper
+                    const w = el.closest('.toggle') || el.parentElement;
+                    if (w) w.click();
+                }
+                return el.checked ? 'set' : 'failed';
+            }""",
+            label,
+        )
+    except Exception as e:
+        print(f"  ⚠️  Could not set '{visible_label}' = Yes ({e}) — please toggle it by hand.")
+        return False
+
+    if result == "already":
+        print(f"  ℹ️  '{visible_label}' is already Yes")
+        return True
+    if result == "set":
+        print(f"  ✅  Set '{visible_label}' = Yes")
         iran_settle(page)
         return True
-    except Exception:
-        print(f"  ⚠️  Could not set '{label}' = Yes — please toggle it by hand.")
+    if result == "missing":
+        print(f"  ⚠️  No '{label}' toggle on the page — please set '{visible_label}' by hand.")
         return False
+    print(f"  ⚠️  Could not set '{visible_label}' = Yes — please toggle it by hand.")
+    return False
 
 
 def iran_tick_plan_addon(page, checkbox_label: str) -> bool:
@@ -734,11 +745,49 @@ def _iran_capture_doc_bytes(tameen_page, labels):
     return None, None, None
 
 
+def _tameen_wait_for_doc_details(tameen_page, tries: int = 20) -> bool:
+    """Poll until the Document Details section actually has document rows (a
+    'View' link), scrolling it into view each pass to trigger any lazy load.
+
+    On the Applications page the section loads AFTER the record shell, so an
+    early read saw 'No document available' and gave up. Returns True once real
+    rows show, False if it stays empty (record genuinely has no documents)."""
+    for _ in range(tries):
+        try:
+            state = tameen_page.evaluate("""() => {
+                const all = [...document.querySelectorAll('*')];
+                const header = all.find(e => (e.innerText || '').trim() === 'Document Details');
+                if (!header) return 'no-header';
+                header.scrollIntoView({block: 'center'});
+                const hy = header.getBoundingClientRect().top;
+                let hasView = false, sawNone = false;
+                for (const e of all) {
+                    if (e.children.length !== 0) continue;
+                    const y = e.getBoundingClientRect().top;
+                    if (y <= hy || y > hy + 600) continue;
+                    const t = (e.innerText || '').trim().toLowerCase();
+                    if (t === 'view') hasView = true;
+                    if (t.includes('no document')) sawNone = true;
+                }
+                return hasView ? 'ready' : (sawNone ? 'none' : 'waiting');
+            }""")
+        except Exception:
+            state = "waiting"
+        if state == "ready":
+            return True
+        if state == "none":
+            return False        # section rendered its empty state — record has no docs
+        tameen_page.wait_for_timeout(500)
+    return False
+
+
 def tameen_download_iran_documents(tameen_page, record_tag: str) -> dict:
     """Download the four documents IRAN needs (Civil ID front/back, Driving License
     front/back) from the open Tameen record's Document Details section. Returns a
     dict of local file paths (or None per item). Never crashes the record — flags."""
     print("\n── Tameen: downloading the customer's documents for IRAN ──")
+    if not _tameen_wait_for_doc_details(tameen_page):
+        print("  ⏳  Document Details did not fill in time (or record has none) — continuing.")
     out = {"civil_id_front": None, "civil_id_back": None,
            "license_front": None, "license_back": None}
     safe_tag = "".join(c if c.isalnum() else "_" for c in (record_tag or "record"))[:40] or "record"

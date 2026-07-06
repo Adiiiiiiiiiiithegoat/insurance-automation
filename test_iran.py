@@ -57,6 +57,7 @@ def _list_iran_records(page):
     headers  = rows_data.get("headers", [])
     all_rows = rows_data["rows"]
     company_col_idx = next((i for i, h in enumerate(headers[1:], start=0) if "company" in h.lower()), None)
+    docs_col_idx    = next((i for i, h in enumerate(headers[1:], start=0) if "document" in h.lower()), None)
 
     records = []
     for r in all_rows:
@@ -64,9 +65,16 @@ def _list_iran_records(page):
             cell_val = r["cells"][company_col_idx]
         else:
             cell_val = r["text"]
-        if "iran" in (cell_val or "").lower():
-            r["company"] = "IRAN"
-            records.append(r)
+        if "iran" not in (cell_val or "").lower():
+            continue
+        # Only keep rows whose Documents column has something (not 'NA'). If we
+        # can't find the column, keep the row (better to try than silently drop).
+        if docs_col_idx is not None and docs_col_idx < len(r["cells"]):
+            docs_val = (r["cells"][docs_col_idx] or "").strip().lower()
+            if docs_val in ("", "na", "n/a", "-"):
+                continue
+        r["company"] = "IRAN"
+        records.append(r)
     return records, len(all_rows)
 
 

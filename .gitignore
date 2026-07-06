@@ -31,3 +31,6 @@ screenshots/
 
 # Downloaded customer documents (Civil ID / licence images) — never commit
 iran_uploads/
+
+# Runtime-generated log of unseen NI body types (regenerated each run)
+unmatched_body_types.json
