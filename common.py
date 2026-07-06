@@ -3518,10 +3518,14 @@ def iran_upload_documents(iran_page, doc_paths) -> None:
 
 # ── IRAN flow helpers (one per stage of the form) ─────────────────────────────
 
-def iran_login_if_needed(page) -> None:
+def iran_login_if_needed(page, pause=None) -> None:
     """Log in to IRAN if the Sign In modal is showing; otherwise carry on. The
     image CAPTCHA is ALWAYS solved by the operator during a manual pause (same idea
-    as the Tameen OTP). We pre-fill email/password if .env has them."""
+    as the Tameen OTP). We pre-fill email/password if .env has them.
+
+    `pause` lets a caller replace the terminal wait: the web UI passes a callback
+    that shows a 'Continue' button and blocks until it's clicked. Default (None)
+    keeps the input() pause used by the terminal scripts."""
     print("\n── IRAN: checking if login is needed ──")
     page.wait_for_timeout(1500)
 
@@ -3573,8 +3577,11 @@ def iran_login_if_needed(page) -> None:
     print("\n" + "=" * 60)
     print("⏸  ACTION REQUIRED — IRAN login (manual CAPTCHA)")
     print("=" * 60)
-    input("⏸  In the IRAN tab: type the CAPTCHA shown, then click Sign In. "
-          "Come back and press ENTER ▶  ")
+    if pause is not None:
+        pause()
+    else:
+        input("⏸  In the IRAN tab: type the CAPTCHA shown, then click Sign In. "
+              "Come back and press ENTER ▶  ")
     iran_settle(page)
 
     if _find_pwd(4000) is not None:

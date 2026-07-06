@@ -3,8 +3,8 @@
 {% block content %}
 <div class="card">
   <h1>Records{% if channel_name %} — {{ channel_name }}{% endif %}</h1>
-  <p class="muted">Muscat Insurance and New India records are shown. Click
-    <strong>Open</strong> on a record to read it and prepare that insurer's form.</p>
+  <p class="muted">Muscat Insurance, New India and Iran Insurance records are shown.
+    Click <strong>Open</strong> on a record to read it and prepare that insurer's form.</p>
 
   <form method="post" action="{{ url_for('back_to_channels') }}">
     <button class="btn btn-ghost" type="submit">← Back to channels</button>

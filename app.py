@@ -2,9 +2,12 @@
 Local web UI that wraps the EXISTING production.py flow so a non-technical
 employee drives it by clicking instead of typing in a terminal.
 
-Supports TWO insurers, chosen automatically from each Tameen record's company:
+Supports THREE insurers, chosen automatically from each Tameen record's company:
   • Muscat Insurance (MIC) — filled and left as Draft.
   • New India Assurance    — filled and left at the premium-review step.
+  • Iran Insurance (IRAN)  — documents downloaded from Tameen + re-uploaded, form
+                             filled to the Summary tab. First record pauses for a
+                             manual CAPTCHA (Continue button on the progress page).
 
 ARCHITECTURE (the important part):
   Playwright's SYNC api objects may only be touched by the thread that created
@@ -60,6 +63,11 @@ from common import (
     ni_fill_primary_top, ni_fill_primary_client, ni_fill_previous_policy,
     ni_fill_vehicle_details, ni_fill_premium_calculation, ni_reset_to_motor_policy,
     TAMEEN_CHANNELS, TAMEEN_SECTIONS,
+    # IRAN insurer (third insurer) — helpers + config live in common.py.
+    IRAN_LOGIN_URL, IRAN_DASHBOARD_URL, IRAN_DOC_PRETTY,
+    iran_login_if_needed, iran_go_to_motor_form, iran_fill_basic_info,
+    iran_fill_plan_details, iran_fill_additional_details,
+    tameen_download_iran_documents,
 )
 
 app = Flask(__name__)
@@ -100,9 +108,22 @@ NI_STEPS = [
     "Filling the vehicle details",
     "Filling the premium calculation",
 ]
+IRAN_STEPS = [
+    "Reading the record + downloading documents from Tameen",
+    "Signing in to IRAN (solve the CAPTCHA the first time)",
+    "Opening the motor form",
+    "Filling the basic information",
+    "Filling the plan details",
+    "Filling the additional details + uploading documents",
+]
 
 # Friendly insurer names, keyed by the company code carried on each record row.
-_INSURER_LABELS = {"MIC": "Muscat Insurance", "NEW_INDIA": "New India"}
+_INSURER_LABELS = {"MIC": "Muscat Insurance", "NEW_INDIA": "New India",
+                   "IRAN": "Iran Insurance"}
+
+# Set by the /iran-continue route when the employee has solved the IRAN CAPTCHA.
+# The worker's IRAN login step blocks on this instead of a terminal input().
+iran_resume = threading.Event()
 
 # Read-only copies of the last results, kept on the Flask side purely so screens
 # can be re-rendered (e.g. "Go back" from the confirm screen) without touching the
@@ -308,7 +329,8 @@ def _read_records(page):
     company_col_idx = next((i for i, h in enumerate(headers[1:], start=0) if "company" in h.lower()), None)
 
     def company_of(r):
-        """'MIC' for Muscat Insurance, 'NEW_INDIA' for New India, else None."""
+        """'MIC' for Muscat Insurance, 'NEW_INDIA' for New India, 'IRAN' for Iran
+        Insurance, else None."""
         if company_col_idx is not None and company_col_idx < len(r["cells"]):
             cell_val = r["cells"][company_col_idx]
         else:
@@ -318,6 +340,8 @@ def _read_records(page):
             return "MIC"
         if "new india" in cv:
             return "NEW_INDIA"
+        if "iran" in cv:
+            return "IRAN"
         return None
 
     filtered = []
@@ -519,6 +543,79 @@ def _read_tameen_fields_ni(page, channel_name):
     return prepared, fill
 
 
+def _read_tameen_fields_iran(page, channel_name):
+    """Read every Tameen field IRAN needs AND download the customer's documents.
+    (Reads + derivations copied from test_iran.py's per-record block.) Tameen must
+    be the front tab here — read_field reads via the clipboard and the document
+    download reads the open record's Document Details section."""
+    page.bring_to_front()
+    first_name   = read_field(page, "First Name")
+    last_name    = read_field(page, "Last Name")
+    license_id   = read_field(page, "License ID")
+    product_name = read_field(page, "Product Name")
+    prev_expiry  = read_field(page, "Previous Expiry")
+
+    full_name = (first_name + " " + last_name).strip()
+
+    # (No seats read — IRAN auto-fills seats from the chassis number.)
+    chassis = ""
+    for lbl in ("Chassis Number", "Chassis No", "Chassis"):
+        chassis = read_field(page, lbl)
+        if chassis:
+            break
+    nationality = ""
+    for lbl in ("Nationality", "Nationality of Insured", "Insured Nationality"):
+        nationality = read_field(page, lbl)
+        if nationality:
+            break
+    addons = read_tameen_addons(page)
+
+    # Policy type: from Product Name; if blank, try a Policy Type field; default TP.
+    type_source = product_name
+    if not type_source:
+        for lbl in ("Policy Type", "Policy type", "Cover Type", "Coverage Type"):
+            pt = read_field(page, lbl)
+            if pt:
+                type_source = pt
+                break
+    pn = (type_source or "").lower().replace(" ", "")
+    if "thirdparty" in pn:
+        policy_type = "Third Party"
+    elif "comprehensive" in pn:
+        policy_type = "Comprehensive"
+    else:
+        policy_type = "Third Party"
+
+    uae = "uae" in (addons or "").lower()
+    policy_start = compute_commencing_date_ni(prev_expiry)
+    expiry_flagged = expiry_far_off(parse_tameen_date(prev_expiry))
+    if expiry_flagged:
+        print(f"⚠️  FLAG: policy expiry '{prev_expiry}' is more than a month away — renewing early.")
+
+    # Download the customer's documents (Civil ID + Licence) while Tameen is in front.
+    doc_paths = tameen_download_iran_documents(page, full_name or license_id or "record")
+    got = [IRAN_DOC_PRETTY[k] for k, v in doc_paths.items() if v]
+
+    prepared = {
+        "Product/Type": f"{product_name}  →  {policy_type}",
+        "Insured Name": full_name,
+        "License/CivilID": license_id,
+        "Chassis": chassis or "(not read — check the Tameen label)",
+        "Nationality": nationality or "(not read)",
+        "Policy Start": f"{policy_start}   (from expiry '{prev_expiry}')",
+        **({"⚠ Expiry Flag": f"expiry '{prev_expiry}' is >1 month away — renewing early"} if expiry_flagged else {}),
+        "UAE Cover": "Yes" if uae else "No",
+        "Add-ons": addons or "(none read)",
+        "Documents": (", ".join(got) if got else "(none downloaded — upload by hand on IRAN)"),
+    }
+    fill = {
+        "license_id": license_id, "full_name": full_name, "chassis": chassis,
+        "policy_type": policy_type, "uae": uae, "addons": addons,
+        "policy_start": policy_start, "nationality": nationality, "doc_paths": doc_paths,
+    }
+    return prepared, fill
+
+
 def _compare_premium(net_prem, tameen_total):
     """Same numeric comparison as common.mic_calculate_and_check, but RETURNS the
     outcome so the UI can show it (the helper only prints it)."""
@@ -568,7 +665,52 @@ def _fill_new_india(ni_page, fill, prepared):
                         "record": fill.get("record_text", ""), "prepared": prepared})
 
 
-def _process_record(tameen_page, mic_page, ni_page, idx, st):
+def _iran_captcha_pause():
+    """Called by iran_login_if_needed (worker thread) when the Sign In modal is up.
+    Tell the browser to show a 'Continue' button, then BLOCK until the employee
+    solves the CAPTCHA in the IRAN tab and clicks it (the /iran-continue route sets
+    iran_resume). Fires only on the first IRAN record — later ones are already
+    logged in and skip this entirely."""
+    iran_resume.clear()
+    progress_queue.put({"type": "captcha"})
+    # Bounded so an abandoned progress page can't wedge the worker forever. If it
+    # times out unlogged-in, the next IRAN step fails cleanly (flagged for review).
+    if not iran_resume.wait(timeout=900):   # 15 min
+        print("  ⚠️  IRAN CAPTCHA wait timed out — continuing (login may be incomplete).")
+
+
+def _fill_iran(iran_page, fill, prepared):
+    """Fill the IRAN form (login → additional details), streaming a step event per
+    helper. Stops at the Summary tab — nothing is submitted/issued. Emits a 'final'
+    event tagged insurer=IRAN (no premium comparison — IRAN has none here)."""
+    iran_page.bring_to_front()
+    steps = [
+        ("IRAN login",       lambda: iran_login_if_needed(iran_page, pause=_iran_captcha_pause)),
+        ("Open motor form",  lambda: iran_go_to_motor_form(iran_page, fill["policy_type"])),
+        ("Basic info",       lambda: iran_fill_basic_info(
+            iran_page, fill["license_id"], fill["full_name"], fill["chassis"],
+            fill["policy_type"], fill["uae"])),
+        ("Plan details",     lambda: iran_fill_plan_details(iran_page, fill["addons"])),
+        ("Additional details", lambda: iran_fill_additional_details(
+            iran_page, fill["policy_start"], fill["nationality"], fill["doc_paths"])),
+    ]
+    for i, (name, step) in enumerate(steps, start=1):
+        progress_queue.put({"type": "step", "index": i, "state": "start"})
+        t0 = time.time()
+        try:
+            step()
+        except Exception as e:
+            progress_queue.put({"type": "error", "index": i, "message": str(e),
+                                "record": fill.get("record_text", "")})
+            return
+        print(f"  ⏱  [TIMING] IRAN step {i} ({name}): {time.time() - t0:.1f}s")
+        progress_queue.put({"type": "step", "index": i, "state": "done"})
+
+    progress_queue.put({"type": "final", "insurer": "IRAN",
+                        "record": fill.get("record_text", ""), "prepared": prepared})
+
+
+def _process_record(tameen_page, mic_page, ni_page, iran_page, idx, st):
     """One continuous run, started AFTER the employee confirms the row:
       step 0  — open the row in Tameen and read every field (no clicks needed)
       then the chosen insurer's fill steps, one helper per step,
@@ -588,6 +730,8 @@ def _process_record(tameen_page, mic_page, ni_page, idx, st):
         _click_record(tameen_page, rec["domIdx"])
         if company == "NEW_INDIA":
             prepared, fill = _read_tameen_fields_ni(tameen_page, st["channel_name"])
+        elif company == "IRAN":
+            prepared, fill = _read_tameen_fields_iran(tameen_page, st["channel_name"])
         else:
             prepared, fill = _read_tameen_fields(tameen_page, st["channel_name"])
         fill["record_text"] = rec["text"]
@@ -599,6 +743,10 @@ def _process_record(tameen_page, mic_page, ni_page, idx, st):
 
     if company == "NEW_INDIA":
         _fill_new_india(ni_page, fill, prepared)
+        return
+
+    if company == "IRAN":
+        _fill_iran(iran_page, fill, prepared)
         return
 
     # ── Steps 1..8: fill MIC (one helper per step, before/after events) ──────
@@ -735,15 +883,23 @@ def worker_main():
             ni_page.set_default_timeout(120000)
             _skip_debugger_pauses(ni_page)
 
+            iran_page = context.new_page()
+            iran_page.set_default_timeout(120000)
+            _skip_debugger_pauses(iran_page)
+
             # Native-dialog auto-accept on every working tab (same as production.py).
             mic_page.on("dialog", lambda d: d.accept())
             ni_page.on("dialog", lambda d: d.accept())
+            iran_page.on("dialog", lambda d: d.accept())
             tameen_page.on("dialog", lambda d: d.accept())
             # Auto-save Print → Download PDFs to the Downloads folder (no dialog, so
             # the single browser worker never blocks waiting on a Save As window).
+            # (IRAN's document download uses context.route interception, not download
+            # events, so it needs no wiring here.)
             _wire_downloads(context)
             mic_page.goto(MIC_HOME_URL, timeout=60000)
             ni_page.goto(NI_LOGIN_URL, timeout=60000)
+            iran_page.goto(IRAN_LOGIN_URL, timeout=60000)
 
             # Show the Tameen tab when the browser opens — that's the one the
             # employee needs for the login/OTP. (the insurer tabs were navigated
@@ -774,7 +930,8 @@ def worker_main():
                 if action == "process_record":
                     # No result_queue reply — the page watches the SSE stream while
                     # this reads Tameen and fills the chosen insurer in one run.
-                    _process_record(tameen_page, mic_page, ni_page, args["index"], st)
+                    _process_record(tameen_page, mic_page, ni_page, iran_page,
+                                    args["index"], st)
                     continue
 
                 try:
@@ -800,13 +957,18 @@ def worker_main():
                     elif action in ("reset", "back_to_channels"):
                         if action == "reset":
                             # Close policy clutter first: only the working tabs stay.
-                            _close_extra_tabs(context, (tameen_page, mic_page, ni_page))
+                            _close_extra_tabs(context, (tameen_page, mic_page, ni_page, iran_page))
                             # Reset only the insurer tab we actually used this record
                             # (default MIC if we never got that far). Guard each so one
                             # failing doesn't abort the rest.
                             try:
                                 if st.get("last_company") == "NEW_INDIA":
                                     ni_reset_to_motor_policy(ni_page)
+                                elif st.get("last_company") == "IRAN":
+                                    # IRAN has no in-app reset — a goto to the Dashboard
+                                    # (keeps the login cookie) returns it to a known state.
+                                    iran_page.goto(IRAN_DASHBOARD_URL,
+                                                   wait_until="domcontentloaded", timeout=60000)
                                 else:
                                     mic_reset_to_home(mic_page)
                             except Exception as e:
@@ -951,7 +1113,7 @@ def start_processing(idx):
     row = rows[idx] if idx < len(rows) else {}
     record_text = "  |  ".join(row.get("cells", []))
     company = row.get("company") or "MIC"
-    steps = NI_STEPS if company == "NEW_INDIA" else MIC_STEPS
+    steps = {"NEW_INDIA": NI_STEPS, "IRAN": IRAN_STEPS}.get(company, MIC_STEPS)
     insurer = _INSURER_LABELS.get(company, "Muscat Insurance")
     # Drop any events left over from a progress page that was abandoned before its
     # stream reached final/error — otherwise this run's SSE stream would read those
@@ -977,6 +1139,15 @@ def progress_stream():
                 break
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/iran-continue", methods=["POST"])
+def iran_continue():
+    """The employee solved the IRAN CAPTCHA and clicked Continue on the progress
+    page. Release the worker's login step (it's blocked in _iran_captcha_pause).
+    Touches no Playwright — just sets a thread event."""
+    iran_resume.set()
+    return ("", 204)
 
 
 @app.route("/reset", methods=["POST"])

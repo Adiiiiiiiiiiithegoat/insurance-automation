@@ -82,11 +82,39 @@
   const NI_MANUAL_NOTE = '<div class="banner alert">Fill these New India fields by hand — the '
     + 'automation cannot: <strong>Place of Manufacture, HP CC, Emp. Weight, Load Weight, Model Year.</strong></div>';
 
+  // IRAN only: the first record pauses for the manual CAPTCHA. Show a full-screen
+  // prompt with a Continue button; clicking it releases the worker (POST
+  // /iran-continue) so the fill carries on. The SSE stream stays open throughout.
+  function showCaptchaPrompt(){
+    try { window.focus(); } catch(e){}
+    if (document.getElementById('captcha-ov')) return;
+    const ov = document.createElement('div');
+    ov.id = 'captcha-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;flex-direction:column;'
+      + 'align-items:center;justify-content:center;gap:20px;text-align:center;padding:24px;'
+      + 'background:rgba(31,61,107,.94);color:#fff';
+    ov.innerHTML = '<div style="font-size:56px">🔑</div>'
+      + '<div style="font-size:26px;font-weight:800;max-width:640px">Log in to IRAN</div>'
+      + '<div style="font-size:18px;opacity:.92;max-width:640px">Switch to the browser window, '
+      + 'go to the <strong>IRAN</strong> tab, type the CAPTCHA shown and click <strong>Sign In</strong>. '
+      + 'Then come back here and click Continue.</div>'
+      + '<button id="captcha-go" style="font-size:18px;font-weight:700;padding:12px 28px;border:0;'
+      + 'border-radius:10px;background:#fff;color:#1f3d6b;cursor:pointer">I\'ve signed in — Continue ▶</button>';
+    document.body.appendChild(ov);
+    document.getElementById('captcha-go').addEventListener('click', () => {
+      const b = document.getElementById('captcha-go');
+      b.disabled = true; b.textContent = 'Continuing…';
+      fetch("{{ url_for('iran_continue') }}", { method: 'POST' }).finally(() => ov.remove());
+    });
+  }
+
   const src = new EventSource("{{ url_for('progress_stream') }}");
   src.onmessage = (e) => {
     const d = JSON.parse(e.data);
     if (d.type === 'step') {
       set(d.index, d.state === 'start' ? 'active' : 'done');
+    } else if (d.type === 'captcha') {
+      showCaptchaPrompt();
     } else if (d.type === 'error') {
       if (d.index != null) set(d.index, 'failed');
       const rec = d.record ? '<p class="muted">Record: ' + esc(d.record) + '</p>' : '';
@@ -103,6 +131,10 @@
         // New India has no premium comparison here — it stops at the review step.
         body = '<div class="banner green"><strong>✅ New India form filled — review it '
           + 'on screen.</strong></div>';
+      } else if (d.insurer === 'IRAN') {
+        // IRAN has no premium comparison here — it stops at the Summary tab.
+        body = '<div class="banner green"><strong>✅ IRAN form filled to the Summary tab — '
+          + 'review it on screen.</strong></div>';
       } else if (d.compared && d.match) {
         body = '<div class="banner green"><strong>✅ Premiums match.</strong><br>'
           + 'MIC: ' + esc(d.mic) + ' &nbsp; Tameen: ' + esc(d.tameen) + '</div>';
