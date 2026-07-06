@@ -2867,10 +2867,11 @@ def ni_reset_to_motor_policy(page) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 #  IRAN INSURANCE CO  —  CONFIGURATION  (third insurer, runs alongside MIC + NI)
 # ══════════════════════════════════════════════════════════════════════════════
-#  .env needs two more lines (never committed — see the header above):
-#       IRAN_USERNAME=your_iran_login_email_here
+#  The IRAN login email is HARDCODED here so every laptop uses the same account
+#  after pulling (no per-machine .env needed for it). The password still comes from
+#  .env (never committed) — add one line there:
 #       IRAN_PASSWORD=your_iran_password_here
-IRAN_USERNAME = os.getenv("IRAN_USERNAME", "")
+IRAN_USERNAME = "suad.alkalbani@tameen.om"
 IRAN_PASSWORD = os.getenv("IRAN_PASSWORD", "")
 
 IRAN_LOGIN_URL        = "https://ecrm-portal.com:92/"
