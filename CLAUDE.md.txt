@@ -7,22 +7,57 @@ Give instructions one step at a time.
 When something breaks I will paste the exact error.
 
 ## PROJECT OVERVIEW
-Playwright automation for Oman motor insurance broker.
-Automates form filling on insurer websites using data 
-scraped from broker portal (Tameen).
+Playwright automation for an Oman motor insurance broker.
+Reads a customer's renewal data from the broker portal (Tameen) and fills the
+matching new-policy form on each insurer's website. Nothing is ever submitted
+automatically — every flow STOPS at the review/summary/draft stage so a human
+checks it first.
 
-## CURRENT SCRIPT
-- Main file: insurance_automation.py
-- Demo works against OrangeHRM placeholder
-- Tameen side is pointed at real site and working
+Three insurers are supported:
+  • MIC  — Muscat Insurance Company
+  • NI   — The New India Assurance Company
+  • IRAN — Iran Insurance Company
+(A fourth insurer's rows are simply skipped.)
+
+## THE FILES
+- common.py    — shared helpers: Tameen reading, MIC + New India form-fill,
+                 date/plate/body-type utilities. The IRAN form-fill helpers
+                 currently live in test.py (move them here if IRAN goes to
+                 production).
+- production.py — the real daily journey. Runs MIC + New India from the Tameen
+                  PAYMENTS page. IRAN is NOT in production yet.
+- test.py      — interactive tester for MIC + New India + IRAN off the Tameen
+                 PAYMENTS page (you pick channel + row by number each time).
+                 Also the current home of all the IRAN (iran_*) helpers.
+- test_ni.py   — unattended tester for MIC + New India off the Tameen
+                 APPLICATIONS page (walks every matching row by itself).
+- test_iran.py — unattended tester for IRAN ONLY off the Tameen APPLICATIONS
+                 page. Same style as test_ni.py. (IRAN's manual CAPTCHA means
+                 the first IRAN record still pauses once for login.)
+- app.py       — control-panel UI.
+- ni_*.py      — New India body-type / car scraping helpers.
+
+Only ONE of these can run at a time — they share the Chromium profile
+(automation_profile), and Chromium allows one window per profile.
+
+## CREDENTIALS
+Stored in a local .env file (git-ignored, never uploaded):
+  MIC_USERNAME / MIC_PASSWORD
+  NI_USERNAME / NI_PASSWORD
+  IRAN_USERNAME / IRAN_PASSWORD
 
 ## RULES FOR THIS CODEBASE
-- Never rewrite the whole script, edit only what's needed
-- Always explain what a code change does before making it
-- Keep all working functions exactly as they are
-- Add comments in plain English above every function
-- Never use technical jargon in explanations
+- Never rewrite a whole script — edit only what's needed.
+- Always explain what a code change does before making it.
+- Keep working functions exactly as they are.
+- Plain-English comments above every function; no jargon in explanations.
+- Check errorlog.md.txt BEFORE debugging — solved problems are recorded there.
 
-## CURRENT NEXT STEP
-Building field map for insurer form, then replacing 
-OrangeHRM placeholder with real insurer script.
+## KEY BEHAVIOURS TO KNOW
+- Tameen fields are read via the clipboard, so the Tameen tab must be in front
+  when reading (each loop calls bring_to_front()).
+- IRAN documents (Civil ID + License, front/back) are downloaded from Tameen's
+  "Document Details" section and re-uploaded to IRAN. The download uses a
+  route-intercept because Tameen's "View" links mint one-time e-locker URLs.
+- On IRAN's Plan Details tab, "PAB Cover for Driver Only" and "Pab Cover To
+  Passenger" are ALWAYS ticked (mandatory), regardless of Tameen add-ons.
