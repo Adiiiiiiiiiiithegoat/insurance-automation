@@ -690,7 +690,7 @@ def _fill_iran(iran_page, fill, prepared):
         ("Basic info",       lambda: iran_fill_basic_info(
             iran_page, fill["license_id"], fill["full_name"], fill["chassis"],
             fill["policy_type"], fill["uae"])),
-        ("Plan details",     lambda: iran_fill_plan_details(iran_page, fill["addons"])),
+        ("Plan details",     lambda: iran_fill_plan_details(iran_page, fill["addons"], uae=fill["uae"])),
         ("Additional details", lambda: iran_fill_additional_details(
             iran_page, fill["policy_start"], fill["nationality"], fill["doc_paths"])),
     ]

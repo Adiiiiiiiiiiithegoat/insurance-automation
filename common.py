@@ -3695,15 +3695,21 @@ def iran_fill_basic_info(page, license_id, full_name, chassis, policy_type, uae)
     iran_click_button(page, "Next")
 
 
-def iran_fill_plan_details(page, addons) -> None:
+def iran_fill_plan_details(page, addons, uae=False) -> None:
     """Tab 2 — PlanDetails: tick the IRAN plan checkboxes matching the Tameen
-    add-ons (via IRAN_ADDON_MAP), then Select Plan → Next."""
+    add-ons (via IRAN_ADDON_MAP), then Select Plan → Next. When `uae` is True (UAE
+    Cover was toggled Yes on Tab 1), an 'Orange Card Coverage' checkbox appears here
+    and MUST be ticked, regardless of the Tameen add-ons."""
     print("\n── IRAN Tab 2: Plan Details (Choose Your Plan) ──")
     addons_l = (addons or "").lower()
 
     always_ticked = [label for label in IRAN_PLAN_ALWAYS_TICK if iran_tick_plan_addon(page, label)]
     if always_ticked:
         print(f"  ✅  Mandatory PAB checkboxes ticked: {', '.join(always_ticked)}")
+
+    # UAE Cover = Yes reveals 'Orange Card Coverage' here, which must be ticked.
+    if uae and iran_tick_plan_addon(page, "Orange Card Coverage"):
+        print("  ✅  UAE Cover is Yes → ticked 'Orange Card Coverage'")
 
     if not addons:
         print("  ℹ️  No Tameen add-ons read — no optional plan checkboxes to tick.")

@@ -251,7 +251,7 @@ if __name__ == "__main__":
                     iran_login_if_needed(iran_page)
                     iran_go_to_motor_form(iran_page, policy_type)
                     iran_fill_basic_info(iran_page, license_id, full_name, chassis, policy_type, uae)
-                    iran_fill_plan_details(iran_page, addons)
+                    iran_fill_plan_details(iran_page, addons, uae=uae)
                     iran_fill_additional_details(iran_page, policy_start, nationality, doc_paths)
 
                     results.append((record_text, "PASS"))
