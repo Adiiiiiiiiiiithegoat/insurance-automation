@@ -75,10 +75,15 @@
     } catch(e){}
   }
 
-  // Notes the employee must act on once the form is filled.
-  const CHECK_NOTE = '<div class="banner info"><strong>Please double-check before confirming:</strong>'
-    + '<ul><li>Name and Address</li><li>Make and Model</li>'
-    + '<li>Any field that should have been filled but is blank</li></ul></div>';
+  // Notes the employee must act on once the form is filled. The checklist is
+  // per-insurer: 'Make and Model' is New India only; MIC is just Name and Address.
+  function checkNote(insurer){
+    const items = ['Name and Address'];
+    if (insurer === 'NEW_INDIA') items.push('Make and Model');
+    if (insurer !== 'MIC') items.push('Any field that should have been filled but is blank');
+    return '<div class="banner info"><strong>Please double-check before confirming:</strong><ul>'
+      + items.map(i => '<li>' + esc(i) + '</li>').join('') + '</ul></div>';
+  }
   const NI_MANUAL_NOTE = '<div class="banner alert">Fill these New India fields by hand — the '
     + 'automation cannot: <strong>Place of Manufacture, HP CC, Emp. Weight, Load Weight, Model Year.</strong></div>';
   const IRAN_MANUAL_NOTE = '<div class="banner alert">On IRAN you must <strong>enter the '
@@ -165,7 +170,7 @@
       let manualNote = '';
       if (d.insurer === 'NEW_INDIA') manualNote = NI_MANUAL_NOTE;
       else if (d.insurer === 'IRAN') manualNote = IRAN_MANUAL_NOTE;
-      const notes = CHECK_NOTE + manualNote;
+      const notes = checkNote(d.insurer) + manualNote;
       showResult(flagBanner + body + rec + notes + details);
       notifyDone('Automation done — ready for review', false);
       src.close();
