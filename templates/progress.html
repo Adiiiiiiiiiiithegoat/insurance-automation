@@ -81,6 +81,9 @@
     + '<li>Any field that should have been filled but is blank</li></ul></div>';
   const NI_MANUAL_NOTE = '<div class="banner alert">Fill these New India fields by hand — the '
     + 'automation cannot: <strong>Place of Manufacture, HP CC, Emp. Weight, Load Weight, Model Year.</strong></div>';
+  const IRAN_MANUAL_NOTE = '<div class="banner alert">On IRAN you must <strong>enter the '
+    + 'Nationality</strong> and then click <strong>Continue</strong> yourself — the automation '
+    + 'stops before that step.</div>';
 
   // IRAN only: the first record pauses for the manual CAPTCHA. Show a full-screen
   // prompt with a Continue button; clicking it releases the worker (POST
@@ -159,7 +162,10 @@
         }
         details += '</div>';
       }
-      const notes = CHECK_NOTE + (d.insurer === 'NEW_INDIA' ? NI_MANUAL_NOTE : '');
+      let manualNote = '';
+      if (d.insurer === 'NEW_INDIA') manualNote = NI_MANUAL_NOTE;
+      else if (d.insurer === 'IRAN') manualNote = IRAN_MANUAL_NOTE;
+      const notes = CHECK_NOTE + manualNote;
       showResult(flagBanner + body + rec + notes + details);
       notifyDone('Automation done — ready for review', false);
       src.close();
