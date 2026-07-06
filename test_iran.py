@@ -6,14 +6,14 @@ Mirrors test_ni.py (which does MIC + New India) but for the third insurer:
   • IRAN Insurance — filled to the Summary tab only (nothing submitted/issued).
 
 Why this exists: to build confidence in the IRAN form-fill + document
-download/upload by running it over lots of old records unattended and
-collecting the terminal output for diagnosis.
+download/upload by running it over old records ONE AT A TIME, reviewing each
+result before moving on so any error can be fixed before the next.
 
 How to run (from this folder):    python test_iran.py
-  → Log into Tameen once (OTP), press ENTER, then it runs UNATTENDED: it walks
-    every IRAN row on the Applications page by itself, printing a PASS/FAIL block
-    per record. Copy the whole terminal at the end for diagnosis. (IRAN's login
-    has a manual CAPTCHA, so the FIRST IRAN record still pauses once for that.)
+  → Log into Tameen once (OTP), press ENTER, then it fills the NEXT IRAN record
+    and STOPS. Review it on screen, then press ENTER to do the next one, or type
+    'q' to finish. (IRAN's login has a manual CAPTCHA, so the first IRAN record
+    also pauses once for that.)
 
 This script is SEPARATE from the normal journey:
   - production.py / test.py / the control panel are untouched.
@@ -135,8 +135,8 @@ if __name__ == "__main__":
             print("⏸  ACTION REQUIRED (one time)")
             print("  1. Switch to the Tameen tab")
             print("  2. Log in and complete the OTP")
-            print("  3. Come back here and press ENTER — then it runs (nearly) UNATTENDED")
-            print("     (IRAN's manual CAPTCHA still pauses once, on the first IRAN record)")
+            print("  3. Come back here and press ENTER")
+            print("     Then it fills ONE IRAN record and stops for you to review.")
             print("=" * 60)
             input("\nPress ENTER once you are logged in to Tameen ▶  ")
 
@@ -145,7 +145,7 @@ if __name__ == "__main__":
             tameen_click_dashboard_tile(tameen_page, "APPLICATIONS")
 
             # ══════════════════════════════════════════════════════════════════
-            #  PER-RECORD TESTING LOOP — automatic (bar the one IRAN CAPTCHA)
+            #  PER-RECORD LOOP — ONE record, then pause for review before the next
             # ══════════════════════════════════════════════════════════════════
             while True:
                 record_text = None
@@ -269,7 +269,14 @@ if __name__ == "__main__":
                         print("  (Failed before the record's details could be read.)")
                     print("=" * 60)
 
-                # Reset the IRAN tab + Tameen, then straight to the next record.
+                # STOP and let the operator review this record before touching
+                # anything. Nothing resets until they choose to continue.
+                ans = input("\nReview the result on screen. Press ENTER to reset the tabs "
+                            "and do the NEXT IRAN record, or type 'q' then ENTER to finish ▶  ")
+                if ans.strip().lower() == "q":
+                    break
+
+                # Reset the IRAN tab + Tameen, then on to the next record.
                 print("\n── IRAN reset: returning to the Dashboard ──")
                 try:
                     iran_page.goto(IRAN_DASHBOARD_URL, wait_until="domcontentloaded", timeout=60000)
