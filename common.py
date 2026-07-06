@@ -2450,7 +2450,7 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
         else:
             brand = ""
     if not model or "not found" in model.strip().lower():
-        if tameen_model:
+        if tameen_model and "not found" not in tameen_model.strip().lower():
             print(f"  ℹ️  New India Model was '{model or '(blank)'}' — using Tameen's "
                   f"Model '{tameen_model}' instead.")
             model = tameen_model
@@ -2506,8 +2506,21 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
         if not picked and brand:
             # Some Makes list themselves as their own single generic Model entry
             # (e.g. 'GREAT WALL' has no real models, just 'GREAT WALL' itself).
-            # Try that before giving up and leaving it for manual entry.
-            picked = ni_select_contains(page, "Model", [brand])
+            # Must be an EXACT match, not substring — a substring match against
+            # brands like 'TOYOTA' hits nearly every real model in the list
+            # ('TOYOTA AURION V6', 'TOYOTA HILUX', ...) and silently picks the
+            # first one, which is almost certainly the wrong vehicle.
+            model_sel = _ni_find_select(page, "Model")
+            picked = False
+            if model_sel is not None:
+                norm = lambda s: re.sub(r"[^A-Z0-9]", "", str(s).upper())
+                for opt in _sel_option_texts(model_sel):
+                    if norm(opt) == norm(brand):
+                        model_sel.select_option(label=opt)
+                        print(f"  ✅  Selected 'Model' = {opt}   (exact generic-Make match)")
+                        ni_settle(page)
+                        picked = True
+                        break
             if picked:
                 print(f"  ℹ️  No '{model}' option existed — used the generic "
                       f"'{brand}' Model entry instead.")
