@@ -20,15 +20,14 @@ Three insurers are supported:
 (A fourth insurer's rows are simply skipped.)
 
 ## THE FILES
-- common.py    — shared helpers: Tameen reading, MIC + New India form-fill,
-                 date/plate/body-type utilities. The IRAN form-fill helpers
-                 currently live in test.py (move them here if IRAN goes to
-                 production).
+- common.py    — shared helpers: Tameen reading, MIC + New India + IRAN
+                 form-fill, date/plate/body-type utilities. All iran_* helpers
+                 and IRAN_* config now live here (moved out of test.py) so the
+                 UI / production can import them exactly like MIC/NI.
 - production.py — the real daily journey. Runs MIC + New India from the Tameen
                   PAYMENTS page. IRAN is NOT in production yet.
 - test.py      — interactive tester for MIC + New India + IRAN off the Tameen
                  PAYMENTS page (you pick channel + row by number each time).
-                 Also the current home of all the IRAN (iran_*) helpers.
 - test_ni.py   — unattended tester for MIC + New India off the Tameen
                  APPLICATIONS page (walks every matching row by itself).
 - test_iran.py — unattended tester for IRAN ONLY off the Tameen APPLICATIONS

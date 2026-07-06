@@ -20,20 +20,16 @@ This script is SEPARATE from the normal journey:
   - Do NOT run this at the same time as them — they share the browser profile
     (automation_profile) and Chromium allows one window per profile.
 
-ponytail: reuses the IRAN form helpers from test.py and the Applications-tile
-navigation from test_ni.py rather than duplicating either. Both are safe to
-import (their run code is under `if __name__ == "__main__"`). If IRAN ever goes
-to production.py, move the iran_* helpers into common.py (as MIC/NI already are)
-and import from there instead of from test.
+ponytail: reuses the IRAN form helpers from common.py and the Applications-tile
+navigation from test_ni.py rather than duplicating either (test_ni's run code is
+under `if __name__ == "__main__"`, so importing it is safe).
 """
 from playwright.sync_api import sync_playwright
 
 from common import (
     read_field, parse_tameen_date, expiry_far_off, enable_download_dialogs,
     compute_commencing_date_ni, read_tameen_addons, tameen_click_dashboard_tile,
-)
-# IRAN form-fill helpers + constants live in test.py.
-from test import (
+    # IRAN form-fill helpers + constants:
     IRAN_LOGIN_URL, IRAN_DASHBOARD_URL, IRAN_DOC_PRETTY,
     iran_login_if_needed, iran_go_to_motor_form, iran_fill_basic_info,
     iran_fill_plan_details, iran_fill_additional_details,
