@@ -727,7 +727,25 @@ def _process_record(tameen_page, mic_page, ni_page, iran_page, idx, st):
     t0 = time.time()
     try:
         tameen_page.bring_to_front()
-        _click_record(tameen_page, rec["domIdx"])
+        # Match the confirmed row by its CONTENT, not the cached DOM position:
+        # the employee may have sorted / paged / reopened the Tameen table since
+        # they picked it, which would leave the old index pointing at a DIFFERENT
+        # customer. Re-read now and click the row whose cells still match. If none
+        # matches, stop and ask them to reselect — never fall back to an index
+        # (filling the wrong customer's policy is the one thing we must not do).
+        try:
+            fresh = _read_records(tameen_page)["rows"]
+        except Exception:
+            fresh = []
+        match = next((r for r in fresh if r["cells"] == rec["cells"]), None)
+        if match is None:
+            progress_queue.put({"type": "error", "index": 0,
+                "message": ("The Tameen record list changed since you picked this "
+                            "row, so it can no longer be matched safely. Go back "
+                            "and select the record again."),
+                "record": rec["text"]})
+            return
+        _click_record(tameen_page, match["domIdx"])
         if company == "NEW_INDIA":
             prepared, fill = _read_tameen_fields_ni(tameen_page, st["channel_name"])
         elif company == "IRAN":
@@ -848,6 +866,37 @@ def _wire_downloads(context):
     context.on("page", lambda pg: pg.on("download", _autosave_download))
 
 
+# Home URL each working tab is recreated at if the employee closes it by hand.
+# (Tameen goes to the dashboard, not the login page — the persistent-context
+# cookie keeps it logged in.)
+_TAB_HOME = {
+    "tameen": TAMEEN_DASHBOARD_URL,
+    "mic": MIC_HOME_URL,
+    "ni": NI_LOGIN_URL,
+    "iran": IRAN_LOGIN_URL,
+}
+
+
+def _live(context, pages, key):
+    """Return a live page for `key`, recreating the tab if the employee closed it.
+    New pages inherit the skip-debugger + download handlers from the context
+    'page' event, so we only re-attach the per-page dialog handler here. A fresh
+    tab is logged out, so the next step just re-hits that insurer's
+    login-if-needed helper — the same login already done at startup."""
+    pg = pages.get(key)
+    if pg is not None and not pg.is_closed():
+        return pg
+    pg = context.new_page()
+    pg.set_default_timeout(120000)
+    pg.on("dialog", lambda d: d.accept())
+    try:
+        pg.goto(_TAB_HOME[key], timeout=60000)
+    except Exception:
+        pass
+    pages[key] = pg
+    return pg
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # THE WORKER THREAD — owns ALL Playwright objects.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -906,6 +955,11 @@ def worker_main():
             # last, so without this one of them would be in front.)
             tameen_page.bring_to_front()
 
+            # Handles for the four working tabs, so _live() can recreate any the
+            # employee closes by hand instead of letting a dead handle crash a run.
+            pages = {"tameen": tameen_page, "mic": mic_page,
+                     "ni": ni_page, "iran": iran_page}
+
             st = {"channel_name": "", "fill": {}}
             worker_ready.set()
 
@@ -927,6 +981,15 @@ def worker_main():
                 if action == "shutdown":
                     break
 
+                # Recreate any tab the employee closed by hand, so a dead handle
+                # never crashes the run. Cheap when the tabs are open (just an
+                # is_closed() check); reassigns the locals used below + passed to
+                # _process_record.
+                tameen_page = _live(context, pages, "tameen")
+                mic_page = _live(context, pages, "mic")
+                ni_page = _live(context, pages, "ni")
+                iran_page = _live(context, pages, "iran")
+
                 if action == "process_record":
                     # No result_queue reply — the page watches the SSE stream while
                     # this reads Tameen and fills the chosen insurer in one run.
@@ -937,6 +1000,14 @@ def worker_main():
                 try:
                     if action == "login_done":
                         tameen_page.bring_to_front()
+                        # Employees often reach the payments page BY HAND before
+                        # clicking Continue, so we can't assume we're on the
+                        # dashboard (tameen_go_to_payments needs the PAYMENTS tile,
+                        # which only exists there). goto() the dashboard URL works
+                        # from ANY page and keeps the login cookie — a known start
+                        # every time, no matter where they navigated.
+                        tameen_page.goto(TAMEEN_DASHBOARD_URL,
+                                         wait_until="domcontentloaded", timeout=30000)
                         tameen_go_to_payments(tameen_page)
                         tameen_click_payments_by_channel(tameen_page)
                         st["channels"] = _read_channels(tameen_page)
