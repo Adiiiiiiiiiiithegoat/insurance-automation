@@ -26,6 +26,7 @@ from common import (
     ni_login_if_needed, ni_go_to_motor_policy,
     ni_fill_primary_top, ni_fill_primary_client, ni_fill_previous_policy,
     ni_fill_vehicle_details, ni_fill_premium_calculation, ni_reset_to_motor_policy,
+    NIServerError,
 )
 
 
@@ -445,15 +446,29 @@ with sync_playwright() as p:
                     print("=" * 60)
 
                     # ── NEW INDIA: fill the form (stops at review — no submit) ──
+                    # New India's server crashes on some vehicles (their populateBodyType
+                    # postback throws 'Input string was not in a correct format'). It is
+                    # often a load-race, so retry the whole fill ONCE from a fresh form
+                    # before giving up. See errorlog #2.
                     ni_page.bring_to_front()
                     ni_login_if_needed(ni_page)
-                    ni_go_to_motor_policy(ni_page)
-                    ni_fill_primary_top(ni_page, reg_no, license_id)
-                    ni_fill_primary_client(ni_page, commencing_date, full_name)
-                    brand, model, year = ni_fill_previous_policy(ni_page, mileage, color, full_name)
-                    ni_fill_vehicle_details(ni_page, brand, model, body_type, seats,
-                                            tameen_make, tameen_model)
-                    ni_fill_premium_calculation(ni_page, policy_type, seats, addons)
+                    for attempt in (1, 2):
+                        try:
+                            ni_go_to_motor_policy(ni_page)
+                            ni_fill_primary_top(ni_page, reg_no, license_id)
+                            ni_fill_primary_client(ni_page, commencing_date, full_name)
+                            brand, model, year = ni_fill_previous_policy(ni_page, mileage, color, full_name)
+                            ni_fill_vehicle_details(ni_page, brand, model, body_type, seats,
+                                                    tameen_make, tameen_model)
+                            ni_fill_premium_calculation(ni_page, policy_type, seats, addons)
+                            break
+                        except NIServerError as e:
+                            if attempt == 1:
+                                print(f"\n  ⚠️  {e}\n  ↻  Reloading a fresh Motor Policy form and retrying once...")
+                                continue
+                            print("\n  🚨  New India crashed again on retry — likely a bad vehicle "
+                                  "record on their side. The MIC quote is fine; do New India by hand.")
+                            raise
                     # Intentionally STOPS here — nothing is saved/submitted.
 
                     print("\n" + "=" * 60)

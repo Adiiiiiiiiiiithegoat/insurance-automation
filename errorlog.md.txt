@@ -68,12 +68,18 @@ Data-dependent, so it "just appears" on some vehicles.
 
 **What we did (all we CAN do — we can't edit their .vb):**
   - `_ni_check_server_error(page)` runs inside `ni_settle` after every postback. It
-    scans all frames for the error text and prints a loud red RECOVER message instead
-    of letting our field helpers fail cryptically further down.
+    scans all frames for the error text and raises `NIServerError` the instant the crash
+    page appears — so the fill aborts cleanly instead of cascading into 'field not found'
+    errors on a page that is no longer the form.
+  - `production.py` wraps the whole New India fill in a **retry-once** loop. Since the
+    crash is often a load-race (a postback firing before New India finished writing a
+    numeric field), reloading a fresh Motor Policy form and re-filling usually succeeds.
+  - If it crashes AGAIN on the retry, it is a genuinely bad vehicle record on their side:
+    the record is flagged (the MIC quote is already filled and fine), and the operator
+    does New India for that one vehicle by hand.
 
-**Recovery (operator):** press the browser **Back** button ONCE (the form state
-survives), pick **Body Type** by hand from the dropdown, then continue. Do **NOT** press
-the form's **Refresh** button while Body Type / a numeric field is still blank.
+**Recovery (operator, if it survives the retry):** the MIC quote is done; do New India
+for that vehicle by hand. Press browser **Back** if the form state is still there.
 
 **Lesson:** a yellow "Server Error in '/' Application" page is the *remote server*
 crashing on the data we submitted — not a Playwright/selector bug. Confirm whether the

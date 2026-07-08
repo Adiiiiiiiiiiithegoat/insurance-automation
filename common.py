@@ -1565,14 +1565,19 @@ def ni_settle(page) -> None:
     _ni_check_server_error(page)
 
 
+class NIServerError(Exception):
+    """New India's own ASP.NET form crashed on a postback (their populateBodyType()
+    does Convert.ToInt32 on a blank/non-numeric field for certain vehicles and throws
+    'Input string was not in a correct format'). It is THEIR server bug on THEIR data —
+    we can't fix their code, only detect it and recover. The NI fill is retried once
+    (handles a load-race); if it still crashes the record is flagged. See errorlog #2."""
+
+
 def _ni_check_server_error(page) -> None:
-    """New India's own ASP.NET form sometimes crashes on a postback (e.g. its
-    populateBodyType() does Convert.ToInt32 on a blank/comma field and throws
-    'Input string was not in a correct format'). It replaces the whole form with a
-    yellow 'Server Error in / Application' page, which our field helpers then can't
-    read and fail on cryptically. Catch it here and tell the operator how to recover
-    instead of letting the run derail silently. This is THEIR server bug — we can't
-    fix their code, only surface it. See errorlog.md.txt entry #2."""
+    """Raise NIServerError if New India replaced the form with its yellow 'Server
+    Error in / Application' page. Called from ni_settle after every postback so the
+    crash aborts the NI fill cleanly instead of cascading into 'field not found'
+    errors on a page that is no longer the form."""
     try:
         for pg in page.context.pages:
             for fr in pg.frames:
@@ -1581,15 +1586,10 @@ def _ni_check_server_error(page) -> None:
                 except Exception:
                     continue
                 if "Server Error in" in body and "Input string was not in a correct format" in body:
-                    red, reset = "\033[41m\033[97m", "\033[0m"
-                    print("\n" + red + " " * 70 + reset)
-                    print(red + "  🚨  NEW INDIA SERVER CRASHED (their bug, not ours)".ljust(70) + reset)
-                    print(red + "  'Input string was not in a correct format' on a postback.".ljust(70) + reset)
-                    print(red + "  RECOVER: press the browser BACK button ONCE (form state".ljust(70) + reset)
-                    print(red + "  survives), pick Body Type by hand, then continue. Do NOT".ljust(70) + reset)
-                    print(red + "  press 'Refresh' while Body Type / a numeric field is blank.".ljust(70) + reset)
-                    print(red + " " * 70 + reset)
-                    return
+                    raise NIServerError("New India crashed: 'Input string was not in a "
+                                        "correct format' (their populateBodyType postback).")
+    except NIServerError:
+        raise
     except Exception:
         pass
 
