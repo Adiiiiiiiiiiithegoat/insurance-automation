@@ -1562,6 +1562,36 @@ def ni_settle(page) -> None:
     except Exception:
         pass
     page.wait_for_timeout(NI_STEP_PAUSE)
+    _ni_check_server_error(page)
+
+
+def _ni_check_server_error(page) -> None:
+    """New India's own ASP.NET form sometimes crashes on a postback (e.g. its
+    populateBodyType() does Convert.ToInt32 on a blank/comma field and throws
+    'Input string was not in a correct format'). It replaces the whole form with a
+    yellow 'Server Error in / Application' page, which our field helpers then can't
+    read and fail on cryptically. Catch it here and tell the operator how to recover
+    instead of letting the run derail silently. This is THEIR server bug — we can't
+    fix their code, only surface it. See errorlog.md.txt entry #2."""
+    try:
+        for pg in page.context.pages:
+            for fr in pg.frames:
+                try:
+                    body = (fr.locator("body").inner_text(timeout=800) or "")
+                except Exception:
+                    continue
+                if "Server Error in" in body and "Input string was not in a correct format" in body:
+                    red, reset = "\033[41m\033[97m", "\033[0m"
+                    print("\n" + red + " " * 70 + reset)
+                    print(red + "  🚨  NEW INDIA SERVER CRASHED (their bug, not ours)".ljust(70) + reset)
+                    print(red + "  'Input string was not in a correct format' on a postback.".ljust(70) + reset)
+                    print(red + "  RECOVER: press the browser BACK button ONCE (form state".ljust(70) + reset)
+                    print(red + "  survives), pick Body Type by hand, then continue. Do NOT".ljust(70) + reset)
+                    print(red + "  press 'Refresh' while Body Type / a numeric field is blank.".ljust(70) + reset)
+                    print(red + " " * 70 + reset)
+                    return
+    except Exception:
+        pass
 
 
 def _ni_scope(page):

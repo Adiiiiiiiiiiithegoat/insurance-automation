@@ -47,3 +47,35 @@ Called from `mic_calculate_and_check` as step 21.
     click on the exact "OK" button scoped inside the dialog.
   If the button looks themed/coloured, it is an in-page dialog — do NOT reach for
   `page.on("dialog")`.
+
+---
+
+## 2. New India: "Input string was not in a correct format" (Server Error page)
+
+**Symptom**
+Mid-run, New India's form is replaced by a yellow ASP.NET *"Server Error in '/'
+Application — Input string was not in a correct format."* page. Stack trace ends in
+`NIA_WEB.mtrPolicy1.populateBodyType()` called from `btnRefresh_Click`
+(`System.Convert.ToInt32`).
+
+**Root cause — THIS IS NEW INDIA'S SERVER BUG, NOT OURS.**
+Their `populateBodyType()` does `Convert.ToInt32(value)` on a field that is blank or
+non-numeric (empty string / a value with a comma like "15,000"). `Convert.ToInt32("")`
+throws `FormatException`. It fires on a **Refresh** postback. We never click Refresh in
+our code (grep: zero `btnRefresh`), so it is triggered either by the operator pressing
+Refresh, or by their own auto-postback on a vehicle whose data has a blank numeric field.
+Data-dependent, so it "just appears" on some vehicles.
+
+**What we did (all we CAN do — we can't edit their .vb):**
+  - `_ni_check_server_error(page)` runs inside `ni_settle` after every postback. It
+    scans all frames for the error text and prints a loud red RECOVER message instead
+    of letting our field helpers fail cryptically further down.
+
+**Recovery (operator):** press the browser **Back** button ONCE (the form state
+survives), pick **Body Type** by hand from the dropdown, then continue. Do **NOT** press
+the form's **Refresh** button while Body Type / a numeric field is still blank.
+
+**Lesson:** a yellow "Server Error in '/' Application" page is the *remote server*
+crashing on the data we submitted — not a Playwright/selector bug. Confirm whether the
+crashing field is one WE fill (fix our value) or one THEY compute (surface + recover).
+Here it is theirs, so detect-and-guide is the only fix.
