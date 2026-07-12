@@ -32,6 +32,9 @@
   }
   function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
   function showResult(html){
+    // This page never navigates while streaming, so pageshow can't clear a stray
+    // overlay — clear it explicitly the moment the result/error card appears.
+    if (window.__hideOverlay) window.__hideOverlay();
     document.getElementById('result-banner').innerHTML = html;
     document.getElementById('result-card').style.display = 'block';
     document.getElementById('result-card').scrollIntoView({behavior:'smooth'});
@@ -112,7 +115,11 @@
     document.getElementById('captcha-go').addEventListener('click', () => {
       const b = document.getElementById('captcha-go');
       b.disabled = true; b.textContent = 'Continuing…';
-      fetch("{{ url_for('iran_continue') }}", { method: 'POST' }).finally(() => ov.remove());
+      // Only close on success — the worker is released by the POST. If it fails,
+      // re-enable so the button is retryable instead of a dead overlay wedging the run.
+      fetch("{{ url_for('iran_continue') }}", { method: 'POST' })
+        .then(() => ov.remove())
+        .catch(() => { b.disabled = false; b.textContent = "I've signed in — Continue ▶"; });
     });
   }
 

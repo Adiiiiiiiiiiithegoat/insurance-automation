@@ -123,7 +123,19 @@
   <script>
     (function(){
       var overlay = document.getElementById('overlay');
-      function show(){ overlay.classList.add('show'); }
+      var timer;
+      function hide(){ overlay.classList.remove('show'); clearTimeout(timer); }
+      function show(){
+        overlay.classList.add('show');
+        // Safety net: the overlay is full-screen and eats every click/field under
+        // it, so it must NEVER get stuck. pageshow clears it on a real navigation,
+        // but JS-only actions, the SSE progress page, a blocked/slow request, or a
+        // browser that skips pageshow(persisted) would leave it covering everything.
+        // run_action blocks at most 180s (app.py), so 190s can't kill a legit
+        // spinner but guarantees the page is never permanently dead.
+        clearTimeout(timer);
+        timer = setTimeout(hide, 190000);
+      }
       // Any form submit (Yes, channel/record pick, reset, login) does slow browser
       // work on the server — show the spinner immediately.
       document.addEventListener('submit', show, true);
@@ -133,7 +145,10 @@
         if (a && a.href && !a.target && a.getAttribute('href').indexOf('javascript:') !== 0) show();
       }, true);
       // Hide if the page is restored from the back/forward cache.
-      window.addEventListener('pageshow', function(){ overlay.classList.remove('show'); });
+      window.addEventListener('pageshow', hide);
+      // Let SSE-driven pages (progress) clear it the instant a result/error shows,
+      // instead of waiting out the safety timeout on a page that never navigates.
+      window.__hideOverlay = hide;
     })();
   </script>
 </body>
