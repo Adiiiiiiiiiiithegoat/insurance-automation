@@ -930,14 +930,13 @@ def worker_main():
                 # laptops a non-maximized window has so little height that IRAN's
                 # bottom Next/Previous bar falls off-screen after the tall upload
                 # previews render. no_viewport makes the CSS viewport = window size.
-                # --force-device-scale-factor overrides the laptop's Windows display
+                # --force-device-scale-factor=1 overrides the laptop's Windows display
                 # scaling. Native 150% (dpr 1.5) left only ~720px height and shoved
-                # IRAN's Next bar off-screen; forcing 1.0 fixed that but made everything
-                # tiny. 1.25 is the balance: readable, yet ~865px height so the footer
-                # is reachable (the reveal step scrolls/zooms in for any remainder).
-                # Tune this single number: lower = more room but smaller UI.
+                # IRAN's Next bar off-screen; 1.0 gives the full physical height so the
+                # footer is reachable. (1.25 was tried for a bigger UI but the footer
+                # went off-screen again, so we stay at 1.0 — the value that works.)
                 args=["--lang=en-US", "--start-maximized", "--window-size=1920,1080",
-                      "--force-device-scale-factor=1.25", "--high-dpi-support=1"],
+                      "--force-device-scale-factor=1", "--high-dpi-support=1"],
                 no_viewport=True,
                 permissions=["clipboard-read", "clipboard-write"],
                 ignore_https_errors=True,
