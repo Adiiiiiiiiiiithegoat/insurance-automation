@@ -3571,12 +3571,16 @@ def tameen_download_iran_documents(tameen_page, record_tag: str) -> dict:
 
 def _iran_debug_footer(page) -> None:
     """TEMP DIAGNOSTIC: after the uploads, report what happened to the Next
-    button/footer so we can see WHY it vanishes instead of guessing. Prints the
-    count/visibility of every 'Next' element and the footer container's state."""
-    print("\n── IRAN DEBUG: footer/Next state after uploads ──")
+    button/footer. Writes to BOTH the console AND iran_footer_debug.txt (next to
+    the app) so an employee can just open that file and send it — it only breaks
+    on their machines, so we need the real DOM/viewport state from there."""
+    lines = ["── IRAN DEBUG: footer/Next state after uploads ──",
+             f"  when: {datetime.now():%Y-%m-%d %H:%M:%S}"]
     try:
         info = page.evaluate(r"""() => {
-            const out = {nexts: [], footers: [], bodyH: document.body.scrollHeight};
+            const out = {nexts: [], footers: [], bodyH: document.body.scrollHeight,
+                innerW: window.innerWidth, innerH: window.innerHeight,
+                dpr: window.devicePixelRatio, zoom: Math.round((window.outerWidth/window.innerWidth)*100)/100};
             const all = Array.from(document.querySelectorAll('button,a,input,span,div'));
             for (const el of all) {
                 const t = (el.innerText || el.value || '').trim();
@@ -3584,39 +3588,51 @@ def _iran_debug_footer(page) -> None:
                     const r = el.getBoundingClientRect();
                     const cs = getComputedStyle(el);
                     out.nexts.push({
-                        tag: el.tagName, text: t,
-                        display: cs.display, visibility: cs.visibility,
+                        tag: el.tagName,
+                        display: cs.display, visibility: cs.visibility, opacity: cs.opacity,
+                        position: cs.position,
                         disabled: el.disabled === true || el.getAttribute('disabled') !== null,
                         w: Math.round(r.width), h: Math.round(r.height),
-                        top: Math.round(r.top), inDOM: true
+                        top: Math.round(r.top), bottom: Math.round(r.bottom),
+                        offscreen: r.bottom > window.innerHeight || r.top > window.innerHeight
                     });
                 }
             }
-            // any element that looks like the wizard footer
             for (const el of document.querySelectorAll('[class*="footer" i],[class*="btn" i],[class*="action" i]')) {
                 const t = (el.innerText || '').trim();
                 if (t.includes('Next') || t.includes('Previous')) {
                     const cs = getComputedStyle(el);
-                    out.footers.push({tag: el.tagName, cls: el.className,
-                        display: cs.display, visibility: cs.visibility,
-                        h: Math.round(el.getBoundingClientRect().height)});
+                    const r = el.getBoundingClientRect();
+                    out.footers.push({tag: el.tagName, cls: String(el.className).slice(0,80),
+                        display: cs.display, visibility: cs.visibility, position: cs.position,
+                        h: Math.round(r.height), top: Math.round(r.top), bottom: Math.round(r.bottom)});
                     if (out.footers.length >= 4) break;
                 }
             }
             return out;
         }""")
-        print(f"  body scrollHeight: {info.get('bodyH')}")
+        lines.append(f"  window: innerW={info.get('innerW')} innerH={info.get('innerH')} "
+                     f"dpr={info.get('dpr')} zoom={info.get('zoom')}")
+        lines.append(f"  body scrollHeight: {info.get('bodyH')}")
         nexts = info.get("nexts", [])
-        print(f"  'Next' elements in DOM: {len(nexts)}")
+        lines.append(f"  'Next' elements in DOM: {len(nexts)}")
         for n in nexts:
-            print(f"    - {n}")
+            lines.append(f"    - {n}")
         for f in info.get("footers", []):
-            print(f"  footer-ish: {f}")
+            lines.append(f"  footer-ish: {f}")
         if not nexts:
-            print("  → No 'Next' element in the DOM at all → React unmounted the footer.")
+            lines.append("  → No 'Next' element in the DOM at all → React unmounted the footer.")
     except Exception as e:
-        print(f"  ⚠️  debug dump failed: {e}")
-    print("── end IRAN DEBUG ──\n")
+        lines.append(f"  ⚠️  debug dump failed: {e}")
+    lines.append("── end IRAN DEBUG ──")
+    block = "\n".join(lines)
+    print("\n" + block + "\n")
+    try:
+        dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "iran_footer_debug.txt")
+        with open(dbg, "a", encoding="utf-8") as f:
+            f.write(block + "\n\n")
+    except Exception:
+        pass
 
 
 def _iran_wait_upload_committed(page, label: str, tries: int = 40) -> bool:
