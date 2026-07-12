@@ -4017,8 +4017,9 @@ def iran_fill_additional_details(page, policy_start_date, nationality, doc_paths
         page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
-    _iran_debug_footer(page)   # TEMP: report why Next vanishes after uploads
+    _iran_debug_footer(page)   # TEMP: state BEFORE reveal
     iran_reveal_footer(page)   # scroll + zoom-out so the footer is on screen
+    _iran_debug_footer(page)   # TEMP: state AFTER reveal — did Next come on-screen?
     if not iran_click_button(page, "Next"):
         # Last resort: click the Next element directly via JS even if Playwright
         # considers it off-screen/covered. Harmless if it isn't there.
