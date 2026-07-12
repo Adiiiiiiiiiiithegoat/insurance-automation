@@ -3569,6 +3569,30 @@ def tameen_download_iran_documents(tameen_page, record_tag: str) -> dict:
     return out
 
 
+def _iran_wait_upload_committed(page, label: str, tries: int = 40) -> bool:
+    """After set_input_files, block until the ECRM server round-trip finishes.
+    Success signal: the text box next to `label` shows the server GUID (non-empty
+    value), the '×' clear button appears, or a preview image renders. Falls back to
+    network-idle. Returns True if committed, False on timeout (caller carries on).
+    ponytail: polls at 300ms; ~12s ceiling covers a slow PC without hanging."""
+    box = page.locator(
+        f'xpath=//*[contains(normalize-space(.),"{label}")]'
+        f'/following::input[@type="text" or not(@type)][1]'
+    ).first
+    for _ in range(tries):
+        try:
+            if (box.count() and (box.input_value() or "").strip()):
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(300)
+    try:
+        page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    return False
+
+
 def iran_upload_documents(iran_page, doc_paths) -> None:
     """On the AdditionalDetails tab, attach each downloaded file to its Browse box
     via set_input_files(). Names the saved path in any warning so the operator can
@@ -3595,8 +3619,14 @@ def iran_upload_documents(iran_page, doc_paths) -> None:
                 if inp.count() == 0:
                     continue
                 inp.set_input_files(path)
-                print(f"  ✅  Attached '{label}' ← {path}")
-                iran_settle(iran_page)
+                # Each attach is an async POST to the ECRM server; the box only
+                # shows the server GUID once it lands. Wait for that (or network
+                # idle) instead of a flat pause — otherwise a slow PC clicks Next
+                # while an upload is still pending and the wizard hides the footer.
+                if _iran_wait_upload_committed(iran_page, label):
+                    print(f"  ✅  Attached '{label}' ← {path}")
+                else:
+                    print(f"  ✅  Attached '{label}' ← {path} (upload confirmation not seen; continuing)")
                 done = True
                 break
             except Exception:
@@ -3839,4 +3869,10 @@ def iran_fill_additional_details(page, policy_start_date, nationality, doc_paths
     iran_fill_by_label(page, "Insured Address", IRAN_FIXED_ADDRESS)
     iran_select(page, "Transaction Type", IRAN_TRANSACTION_TYPE)
     iran_upload_documents(page, doc_paths)
+    # All uploads must be fully committed server-side before Next renders; a
+    # lingering in-flight POST is what hides the footer on slower PCs.
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
     iran_click_button(page, "Next")
