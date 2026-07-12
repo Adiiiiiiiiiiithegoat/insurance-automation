@@ -2966,6 +2966,7 @@ IRAN_LOGIN_URL        = "https://ecrm-portal.com:92/"
 IRAN_DASHBOARD_URL    = "https://ecrm-portal.com:92/User/Home/Dashboard"
 IRAN_STEP_PAUSE       = 700          # ms wait after each action; raise if fields get skipped
 IRAN_FIXED_MOBILE     = "99435202"   # always
+IRAN_FIXED_EMAIL      = "suad.alkalbani@tameen.om"   # always — overwrites the site default
 IRAN_FIXED_ADDRESS    = "Muscat"     # always
 IRAN_TRANSACTION_TYPE = "Renewal"    # always
 IRAN_ASSURED_TYPE     = "Civil ID"   # always
@@ -3752,6 +3753,13 @@ def iran_fill_basic_info(page, license_id, full_name, chassis, policy_type, uae)
 
     iran_fill_by_label(page, "Insured Name", full_name)            # overwrite any prefill
     iran_fill_by_label(page, "Mobile Number", IRAN_FIXED_MOBILE)
+
+    # Email — overwrite the site's default (mahfoodh@oneic.com.om) with our own.
+    # Label spelling varies, so try the likely ones and keep the first that fills.
+    if not any(iran_fill_by_label(page, lbl, IRAN_FIXED_EMAIL)
+               for lbl in ("Email", "Email Address", "Email ID", "E-mail", "Insured Email")):
+        print("  ⚠️  Could not find the Email field — please set it to "
+              f"{IRAN_FIXED_EMAIL} by hand.")
 
     # Chassis → auto-fills plate / make / model / body / year / seats, etc.
     if chassis:
