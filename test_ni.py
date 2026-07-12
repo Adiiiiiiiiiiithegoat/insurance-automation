@@ -279,7 +279,9 @@ if __name__ == "__main__":
         # Auto-accept native browser dialogs (e.g. beforeunload "Leave site?").
         tameen_page.on("dialog", lambda dialog: dialog.accept())
         mic_page.on("dialog", lambda dialog: dialog.accept())
-        ni_page.on("dialog", lambda dialog: dialog.accept())
+        # Log New India's Save alert before accepting (auto-accept was silently
+        # swallowing SaveClick()'s validation message, making the button look dead).
+        ni_page.on("dialog", lambda d: (print(f"  🔔  New India dialog: {d.message}") if d.message else None, d.accept()))
         enable_download_dialogs(context)
 
         mic_page.goto(MIC_HOME_URL, timeout=60000)

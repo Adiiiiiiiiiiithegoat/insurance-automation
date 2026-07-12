@@ -2937,6 +2937,55 @@ def ni_fill_premium_calculation(page, policy_type, seats: str, addons: str) -> N
         if want[key]:
             ni_set_addon(page, key, label)   # verifies the tick actually stuck
 
+    # Safe post-fill check: report why Save would do nothing, without issuing anything.
+    ni_diagnose_save(page)
+
+
+def ni_diagnose_save(page) -> None:
+    """Find out WHY New India's Save button does nothing — WITHOUT issuing the policy.
+
+    The Save button's onclick is `SaveClick(this,''); if(!SaveClick())return false;
+    __doPostBack(...)`. Only the __doPostBack submits/issues the policy; SaveClick is
+    pure client-side validation. So we:
+      1. dump SaveClick's source (a plain read — no execution, no alert, no submit), and
+      2. run SaveClick() ONCE with __doPostBack and form.submit() neutralised, so even
+         if it returns true nothing can be submitted. This reveals its return value and
+         any exception it throws (a thrown error = the button silently does nothing).
+    Any validation alert SaveClick pops is caught by our dialog handler and printed.
+    """
+    print("\n── New India: diagnosing the Save button (no policy will be issued) ──")
+    js = r"""
+    () => {
+      const w = window;
+      if (typeof w.SaveClick !== 'function') return { found: false };
+      const src = String(w.SaveClick);
+      const realPost = w.__doPostBack;
+      const realSubmit = HTMLFormElement.prototype.submit;
+      let posted = false;
+      w.__doPostBack = function(){ posted = true; };          // swallow the submit
+      HTMLFormElement.prototype.submit = function(){ posted = true; };
+      let ret, err = null;
+      try { ret = w.SaveClick(); } catch (e) { err = String(e && e.stack || e); }
+      w.__doPostBack = realPost;
+      HTMLFormElement.prototype.submit = realSubmit;
+      return { found: true, src, ret, err, posted };
+    }
+    """
+    for fr in _ni_all_frames(page):
+        try:
+            r = fr.evaluate(js)
+        except Exception:
+            continue
+        if not r or not r.get("found"):
+            continue
+        print(f"  SaveClick() returned: {r.get('ret')!r}   threw: {r.get('err')}")
+        if r.get("posted"):
+            print("  ⚠️  SaveClick itself tried to submit (blocked) — unusual; tell the dev.")
+        print("  ── SaveClick source ──")
+        print(r.get("src"))
+        return
+    print("  ⚠️  Could not find SaveClick() in any frame — is the form still open?")
+
 
 def ni_reset_to_motor_policy(page) -> None:
     """Send New India back to a fresh Motor Policy form for the next record."""

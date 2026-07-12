@@ -888,7 +888,10 @@ def _live(context, pages, key):
         return pg
     pg = context.new_page()
     pg.set_default_timeout(120000)
-    pg.on("dialog", lambda d: d.accept())
+    if key == "ni":
+        pg.on("dialog", lambda d: (print(f"  🔔  New India dialog: {d.message}") if d.message else None, d.accept()))
+    else:
+        pg.on("dialog", lambda d: d.accept())
     try:
         pg.goto(_TAB_HOME[key], timeout=60000)
     except Exception:
@@ -938,7 +941,10 @@ def worker_main():
 
             # Native-dialog auto-accept on every working tab (same as production.py).
             mic_page.on("dialog", lambda d: d.accept())
-            ni_page.on("dialog", lambda d: d.accept())
+            # Log New India's Save alert before accepting: SaveClick() pops a native
+            # alert (missing required field) and returns false, so no postback fires
+            # and the button looks dead. Auto-accepting swallowed the reason silently.
+            ni_page.on("dialog", lambda d: (print(f"  🔔  New India dialog: {d.message}") if d.message else None, d.accept()))
             iran_page.on("dialog", lambda d: d.accept())
             tameen_page.on("dialog", lambda d: d.accept())
             # Auto-save Print → Download PDFs to the Downloads folder (no dialog, so

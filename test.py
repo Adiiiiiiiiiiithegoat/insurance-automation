@@ -265,7 +265,8 @@ if __name__ == "__main__":
         # See errorlog.md.txt (entry 1) for why the two dialog types are handled apart.
         mic_page.on("dialog", lambda dialog: dialog.accept())
         tameen_page.on("dialog", lambda dialog: dialog.accept())
-        ni_page.on("dialog", lambda dialog: dialog.accept())
+        # Log New India's Save alert before accepting (see production.py note).
+        ni_page.on("dialog", lambda d: (print(f"  🔔  New India dialog: {d.message}") if d.message else None, d.accept()))
         iran_page.on("dialog", lambda dialog: dialog.accept())
 
         # Restore a normal 'Save As' dialog for the employee's Print → Download step.

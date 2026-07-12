@@ -222,7 +222,10 @@ with sync_playwright() as p:
     # is an in-page APEX HTML dialog handled by mic_accept_confirm_dialog().
     # See errorlog.md.txt (entry 1) for why the two dialog types are handled apart.
     mic_page.on("dialog", lambda dialog: dialog.accept())
-    ni_page.on("dialog", lambda dialog: dialog.accept())
+    # Log New India's message before accepting: the Save button's SaveClick() pops a
+    # native alert (e.g. a missing required field) and returns false, so no postback
+    # fires and the button looks dead. Auto-accepting swallowed that reason silently.
+    ni_page.on("dialog", lambda d: (print(f"  🔔  New India dialog: {d.message}") if d.message else None, d.accept()))
     tameen_page.on("dialog", lambda dialog: dialog.accept())
 
     # Restore a normal 'Save As' dialog for the employee's Print → Download step.
