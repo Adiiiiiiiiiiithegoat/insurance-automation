@@ -3569,6 +3569,56 @@ def tameen_download_iran_documents(tameen_page, record_tag: str) -> dict:
     return out
 
 
+def _iran_debug_footer(page) -> None:
+    """TEMP DIAGNOSTIC: after the uploads, report what happened to the Next
+    button/footer so we can see WHY it vanishes instead of guessing. Prints the
+    count/visibility of every 'Next' element and the footer container's state."""
+    print("\n── IRAN DEBUG: footer/Next state after uploads ──")
+    try:
+        info = page.evaluate(r"""() => {
+            const out = {nexts: [], footers: [], bodyH: document.body.scrollHeight};
+            const all = Array.from(document.querySelectorAll('button,a,input,span,div'));
+            for (const el of all) {
+                const t = (el.innerText || el.value || '').trim();
+                if (t === 'Next') {
+                    const r = el.getBoundingClientRect();
+                    const cs = getComputedStyle(el);
+                    out.nexts.push({
+                        tag: el.tagName, text: t,
+                        display: cs.display, visibility: cs.visibility,
+                        disabled: el.disabled === true || el.getAttribute('disabled') !== null,
+                        w: Math.round(r.width), h: Math.round(r.height),
+                        top: Math.round(r.top), inDOM: true
+                    });
+                }
+            }
+            // any element that looks like the wizard footer
+            for (const el of document.querySelectorAll('[class*="footer" i],[class*="btn" i],[class*="action" i]')) {
+                const t = (el.innerText || '').trim();
+                if (t.includes('Next') || t.includes('Previous')) {
+                    const cs = getComputedStyle(el);
+                    out.footers.push({tag: el.tagName, cls: el.className,
+                        display: cs.display, visibility: cs.visibility,
+                        h: Math.round(el.getBoundingClientRect().height)});
+                    if (out.footers.length >= 4) break;
+                }
+            }
+            return out;
+        }""")
+        print(f"  body scrollHeight: {info.get('bodyH')}")
+        nexts = info.get("nexts", [])
+        print(f"  'Next' elements in DOM: {len(nexts)}")
+        for n in nexts:
+            print(f"    - {n}")
+        for f in info.get("footers", []):
+            print(f"  footer-ish: {f}")
+        if not nexts:
+            print("  → No 'Next' element in the DOM at all → React unmounted the footer.")
+    except Exception as e:
+        print(f"  ⚠️  debug dump failed: {e}")
+    print("── end IRAN DEBUG ──\n")
+
+
 def _iran_wait_upload_committed(page, label: str, tries: int = 40) -> bool:
     """After set_input_files, block until the ECRM server round-trip finishes.
     Success signal: the text box next to `label` shows the server GUID (non-empty
@@ -3875,4 +3925,5 @@ def iran_fill_additional_details(page, policy_start_date, nationality, doc_paths
         page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
+    _iran_debug_footer(page)   # TEMP: report why Next vanishes after uploads
     iran_click_button(page, "Next")
