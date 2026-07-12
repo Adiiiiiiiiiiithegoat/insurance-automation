@@ -3690,23 +3690,21 @@ def iran_reveal_footer(page) -> None:
     zoom the page out step by step until it fits. Independent belt-and-suspenders
     layer on top of maximizing the window."""
     try:
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(300)
-        # Zoom out until Next sits inside the viewport, or we hit 60%.
         page.evaluate(r"""() => {
             const findNext = () => Array.from(document.querySelectorAll('button,a,input,span,div'))
                 .find(el => (el.innerText || el.value || '').trim() === 'Next');
-            let z = parseFloat(document.body.style.zoom) || 1;
-            for (let i = 0; i < 5; i++) {
-                const el = findNext();
-                if (el) {
-                    const r = el.getBoundingClientRect();
-                    if (r.bottom <= window.innerHeight && r.top >= 0 && r.height > 0) return;
-                }
-                z = Math.max(0.6, z - 0.1);
+            const el = findNext();
+            if (!el) return;
+            // Absolute bottom of Next from the top of the document. On a 150%-scaled
+            // laptop this lands ~700px below the window AND past scrollHeight, so
+            // scrolling can't reach it — shrink the page so the whole form + footer
+            // fits the viewport, then scroll to the bottom. Floor at 0.4 (readable).
+            const absBottom = el.getBoundingClientRect().bottom + window.scrollY;
+            if (absBottom > window.innerHeight) {
+                const z = Math.max(0.4, (window.innerHeight - 24) / absBottom);
                 document.body.style.zoom = z;
-                window.scrollTo(0, document.body.scrollHeight);
             }
+            window.scrollTo(0, document.body.scrollHeight);
         }""")
         page.wait_for_timeout(300)
     except Exception:
