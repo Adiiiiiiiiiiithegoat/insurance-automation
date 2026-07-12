@@ -10,7 +10,7 @@
     Take as long as you need — nothing is rushed. The control panel (this window)
     and the automation run in two separate windows on purpose, so you can watch.
   </p>
-  <form method="post" action="{{ url_for('login_done') }}">
+  <form method="post" action="{{ url_for('login_done') }}" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Checking your Tameen login…';">
     <div class="btn-row">
       <button class="btn btn-primary" type="submit">I've logged in — continue ▶</button>
     </div>

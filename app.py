@@ -136,6 +136,19 @@ ui_cache = {"channels": [], "records": {"headers": [], "rows": []},
 # NEW data-returning Tameen readers (JS copied from production.py / common.py,
 # input()/print() menus removed). These run ON THE WORKER THREAD only.
 # ─────────────────────────────────────────────────────────────────────────────
+def _tameen_needs_login(page):
+    """True if Tameen is still on the login/OTP screen (employee clicked 'I've
+    logged in' too early). Fast check so we return a clear message instead of
+    hanging ~60s on tiles that will never appear."""
+    try:
+        if "login" in (page.url or "").lower():
+            return True
+        pwd = page.locator('input[type="password"]')
+        return pwd.count() > 0 and pwd.first.is_visible()
+    except Exception:
+        return False
+
+
 def _read_channels(page):
     """Read the channel tiles from the 'Payments by Channel' page as DATA.
     Returns an ordered list of {channel, count, section}. (Tile-reading + menu
@@ -1020,16 +1033,38 @@ def worker_main():
                         tameen_page.bring_to_front()
                         # Employees often reach the payments page BY HAND before
                         # clicking Continue, so we can't assume we're on the
-                        # dashboard (tameen_go_to_payments needs the PAYMENTS tile,
-                        # which only exists there). goto() the dashboard URL works
-                        # from ANY page and keeps the login cookie — a known start
-                        # every time, no matter where they navigated.
-                        tameen_page.goto(TAMEEN_DASHBOARD_URL,
-                                         wait_until="domcontentloaded", timeout=30000)
-                        tameen_go_to_payments(tameen_page)
-                        tameen_click_payments_by_channel(tameen_page)
-                        st["channels"] = _read_channels(tameen_page)
-                        result_queue.put({"ok": True, "channels": st["channels"]})
+                        # dashboard. goto() the dashboard URL works from ANY page and
+                        # keeps the login cookie — a known start every time.
+                        # RELIABILITY: the #1 "button just keeps loading" cause is
+                        # clicking BEFORE the Tameen login/OTP is finished — the tiles
+                        # never appear so the tile-wait sits for ~60s twice. Detect
+                        # that instantly and tell them, and retry the dashboard load
+                        # once (it often needs a reload right after OTP).
+                        done = False
+                        last_err = None
+                        for _ in range(2):
+                            try:
+                                tameen_page.goto(TAMEEN_DASHBOARD_URL,
+                                                 wait_until="domcontentloaded", timeout=30000)
+                                if _tameen_needs_login(tameen_page):
+                                    result_queue.put({"ok": False, "error":
+                                        "Tameen still shows the login / OTP screen. Finish "
+                                        "signing in in the browser window, then click "
+                                        "\"I've logged in\" again."})
+                                    done = True
+                                    break
+                                tameen_go_to_payments(tameen_page)
+                                tameen_click_payments_by_channel(tameen_page)
+                                st["channels"] = _read_channels(tameen_page)
+                                result_queue.put({"ok": True, "channels": st["channels"]})
+                                done = True
+                                break
+                            except Exception as e:
+                                last_err = e
+                        if not done:
+                            result_queue.put({"ok": False, "error":
+                                f"Could not open Payments by Channel ({last_err}). Make sure "
+                                "Tameen is fully logged in, then click \"I've logged in\" again."})
 
                     elif action == "select_channel":
                         tile = st["channels"][args["index"]]
