@@ -3684,6 +3684,35 @@ def _iran_debug_footer(page) -> None:
         pass
 
 
+def iran_reveal_footer(page) -> None:
+    """Make the bottom Next/Previous bar reachable no matter the screen. Scroll to
+    the bottom; if a 'Next' is still below the visible area (short laptop screen),
+    zoom the page out step by step until it fits. Independent belt-and-suspenders
+    layer on top of maximizing the window."""
+    try:
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(300)
+        # Zoom out until Next sits inside the viewport, or we hit 60%.
+        page.evaluate(r"""() => {
+            const findNext = () => Array.from(document.querySelectorAll('button,a,input,span,div'))
+                .find(el => (el.innerText || el.value || '').trim() === 'Next');
+            let z = parseFloat(document.body.style.zoom) || 1;
+            for (let i = 0; i < 5; i++) {
+                const el = findNext();
+                if (el) {
+                    const r = el.getBoundingClientRect();
+                    if (r.bottom <= window.innerHeight && r.top >= 0 && r.height > 0) return;
+                }
+                z = Math.max(0.6, z - 0.1);
+                document.body.style.zoom = z;
+                window.scrollTo(0, document.body.scrollHeight);
+            }
+        }""")
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
 def _iran_wait_upload_committed(page, label: str, tries: int = 40) -> bool:
     """After set_input_files, block until the ECRM server round-trip finishes.
     Success signal: the text box next to `label` shows the server GUID (non-empty
@@ -3991,4 +4020,19 @@ def iran_fill_additional_details(page, policy_start_date, nationality, doc_paths
     except Exception:
         pass
     _iran_debug_footer(page)   # TEMP: report why Next vanishes after uploads
-    iran_click_button(page, "Next")
+    iran_reveal_footer(page)   # scroll + zoom-out so the footer is on screen
+    if not iran_click_button(page, "Next"):
+        # Last resort: click the Next element directly via JS even if Playwright
+        # considers it off-screen/covered. Harmless if it isn't there.
+        try:
+            clicked = page.evaluate(r"""() => {
+                const el = Array.from(document.querySelectorAll('button,a,input,span,div'))
+                    .find(e => (e.innerText || e.value || '').trim() === 'Next');
+                if (el) { el.click(); return true; }
+                return false;
+            }""")
+            if clicked:
+                print("  ✅  Clicked 'Next' via JS fallback")
+                iran_settle(page)
+        except Exception:
+            pass

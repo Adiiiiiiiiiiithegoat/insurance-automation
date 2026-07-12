@@ -913,7 +913,12 @@ def worker_main():
                 headless=False,
                 slow_mo=450,
                 locale="en-US",
-                args=["--lang=en-US"],
+                # Maximize + let the page fill the whole window. On low-res / high-DPI
+                # laptops a non-maximized window has so little height that IRAN's
+                # bottom Next/Previous bar falls off-screen after the tall upload
+                # previews render. no_viewport makes the CSS viewport = window size.
+                args=["--lang=en-US", "--start-maximized", "--window-size=1920,1080"],
+                no_viewport=True,
                 permissions=["clipboard-read", "clipboard-write"],
                 ignore_https_errors=True,
             )
