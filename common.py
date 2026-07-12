@@ -10,6 +10,7 @@ Credentials live in .env (never committed) — see main.py's header for the form
 from datetime import datetime, timedelta, date
 from dotenv import load_dotenv
 import calendar
+import difflib
 import json
 import os
 import re
@@ -1939,6 +1940,55 @@ def ni_select_exact(page, label: str, option_text: str, alt_labels=None) -> bool
         return False
 
 
+def _ni_pick_closest_model(page, model_sel, model, brand) -> bool:
+    """Fuzzy fallback for the Model dropdown when an exact substring match failed.
+    Mulkiya model text is often misspelled ('AVALOON') or abbreviated, so compare
+    it against each option (with the brand prefix stripped, so 'TOYOTA ' noise
+    doesn't drown out the model) and pick the closest one — but only if it's clearly
+    close, so a typo lands on the right car instead of a random model.
+    ponytail: difflib ratio + 0.72 cutoff; tune the cutoff if it mis-picks.
+    """
+    norm = lambda s: re.sub(r"[^A-Z0-9]", "", str(s).upper())
+    nb = norm(brand)
+    nm = norm(model)
+    if nb and nm.startswith(nb):     # mulkiya sometimes repeats the make ('TOYOTA AVALON')
+        nm = nm[len(nb):]
+    if not nm:
+        return False
+    best_opt, best_ratio = None, 0.0
+    for opt in _sel_option_texts(model_sel):
+        no = norm(opt)
+        if not no or no == "SELECT":
+            continue
+        core = no[len(nb):] if nb and no.startswith(nb) else no
+        r = difflib.SequenceMatcher(None, nm, core or no).ratio()
+        if r > best_ratio:
+            best_opt, best_ratio = opt, r
+    if best_opt and best_ratio >= 0.72:
+        model_sel.select_option(label=best_opt)
+        print(f"  ✅  Selected 'Model' = {best_opt}   "
+              f"(fuzzy match for '{model}', ratio={best_ratio:.2f})")
+        # A confident match (≥0.85) is almost always right. A borderline one
+        # (0.72–0.85) is a guess — shout so the operator eyeballs it before saving.
+        if best_ratio < 0.85:
+            red, reset = "\033[41m\033[97m", "\033[0m"
+            print("\n" + red + " " * 70 + reset)
+            print(red + f"  🚨  LOW-CONFIDENCE MODEL: '{model}' → '{best_opt}' "
+                        f"(ratio={best_ratio:.2f}) — PLEASE VERIFY  ".ljust(70) + reset)
+            print(red + " " * 70 + reset)
+            try:
+                log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "fuzzy_model_log.txt")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now():%Y-%m-%d %H:%M}  mulkiya='{model}' "
+                            f"brand='{brand}' -> '{best_opt}' ratio={best_ratio:.2f}\n")
+            except Exception:
+                pass
+        ni_settle(page)
+        return True
+    return False
+
+
 def ni_select_contains(page, label: str, substrings, alt_labels=None) -> bool:
     """Pick the dropdown option that contains ALL of the given substrings
     (case-insensitive). Used when we don't know the exact option text — e.g. the
@@ -2533,6 +2583,14 @@ def ni_fill_vehicle_details(page, brand: str, model: str, body_type: str, seats:
 
     if model:
         picked = ni_select_contains(page, "Model", [model])
+        if not picked and brand:
+            # Exact substring failed — the mulkiya model is often misspelled
+            # ('AVALOON' for 'AVALON') or abbreviated. Try the closest option by
+            # string similarity BEFORE the generic-brand fallback, so a typo lands
+            # on the right car ('TOYOTA AVALON') instead of the generic 'TOYOTA'.
+            model_sel = _ni_find_select(page, "Model")
+            if model_sel is not None:
+                picked = _ni_pick_closest_model(page, model_sel, model, brand)
         if not picked and brand:
             # Some Makes list themselves as their own single generic Model entry
             # (e.g. 'GREAT WALL' has no real models, just 'GREAT WALL' itself).
