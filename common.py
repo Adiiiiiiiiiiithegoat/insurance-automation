@@ -3757,7 +3757,7 @@ def iran_fill_basic_info(page, license_id, full_name, chassis, policy_type, uae)
     # Email — overwrite the site's default (mahfoodh@oneic.com.om) with our own.
     # Label spelling varies, so try the likely ones and keep the first that fills.
     if not any(iran_fill_by_label(page, lbl, IRAN_FIXED_EMAIL)
-               for lbl in ("Email", "Email Address", "Email ID", "E-mail", "Insured Email")):
+               for lbl in ("E-mail Address", "Email Address", "Email", "Email ID", "E-mail", "Insured Email")):
         print("  ⚠️  Could not find the Email field — please set it to "
               f"{IRAN_FIXED_EMAIL} by hand.")
 
