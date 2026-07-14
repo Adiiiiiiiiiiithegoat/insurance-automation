@@ -3362,6 +3362,30 @@ IRAN_DOC_PRETTY = {
 }
 
 
+def _iran_is_real_doc(body: bytes, content_type: str) -> bool:
+    """True only if `body` is an actual image/PDF, not an HTML spinner/error page
+    or a truncated 0-byte read. This is the guard that stops empty uploads: when
+    Tameen's View tab doesn't render first try it hands back a tiny HTML shell,
+    and the old code wrote that straight to disk and uploaded it.
+    ponytail: magic-byte sniff + size floor; covers every format Tameen serves."""
+    if not body or len(body) < 1024:
+        return False
+    ct = (content_type or "").lower()
+    if "html" in ct or "text/" in ct:
+        return False
+    head = body[:16].lstrip()
+    if head[:1] in (b"<",):                       # HTML/XML error page
+        return False
+    magics = (b"%PDF", b"\xff\xd8\xff", b"\x89PNG", b"GIF8", b"BM")
+    if head.startswith(magics):
+        return True
+    if head[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        return True
+    # No known signature but it's binary and sizeable, and the server called it an
+    # image/pdf → accept (some elocker docs come back as octet-stream).
+    return ("image" in ct or "pdf" in ct or "octet-stream" in ct)
+
+
 def _iran_guess_ext(url: str, content_type: str) -> str:
     """Pick a file extension from the URL, else the content-type; default .jpg."""
     u = (url or "").lower().split("?")[0]
@@ -3499,35 +3523,42 @@ def _iran_capture_doc_bytes(tameen_page, labels):
     ctx.route(pattern, handle_route)
     try:
         for lab in labels:
-            try:
-                handle = _iran_find_doc_click_target(tameen_page, lab)
-                target = handle.as_element()
-                if target is None:
+            # Retry the open: Tameen's viewer often serves a blank/HTML shell on the
+            # first click and only renders the real file on a reopen — so we close
+            # the tab and click again (up to 3x) until the captured bytes pass the
+            # real-doc check, instead of writing whatever the first try returned.
+            for attempt in range(1, 4):
+                try:
+                    handle = _iran_find_doc_click_target(tameen_page, lab)
+                    target = handle.as_element()
+                    if target is None:
+                        break            # label not on this page — try next spelling
+                    captured.clear()
+                    with ctx.expect_page(timeout=8000) as np:
+                        target.scroll_into_view_if_needed(timeout=6000)
+                        target.click()
+                    newpg = np.value
+                    try:
+                        newpg.wait_for_load_state("domcontentloaded", timeout=8000)
+                    except Exception:
+                        pass
+                    newpg.wait_for_timeout(700)  # let the route handler settle
+                    url = newpg.url
+                    body = captured.get("body")
+                    ctype = captured.get("ctype", "")
+                    try:
+                        newpg.close()
+                    except Exception:
+                        pass
+                    if _iran_is_real_doc(body, ctype):
+                        print(f"  🔎  '{lab}': captured {len(body)} bytes via route intercept")
+                        return body, url, ctype
+                    got = f"{len(body)} bytes, {ctype or 'no content-type'}" if body else "no body"
+                    print(f"  ↻  '{lab}': attempt {attempt} gave an unusable file ({got}) — reopening.")
+                    tameen_page.wait_for_timeout(600)
+                except Exception:
+                    tameen_page.wait_for_timeout(600)
                     continue
-                captured.clear()
-                with ctx.expect_page(timeout=8000) as np:
-                    target.scroll_into_view_if_needed(timeout=6000)
-                    target.click()
-                newpg = np.value
-                try:
-                    newpg.wait_for_load_state("domcontentloaded", timeout=8000)
-                except Exception:
-                    pass
-                newpg.wait_for_timeout(500)  # let the route handler settle
-                url = newpg.url
-                body = captured.get("body")
-                ctype = captured.get("ctype", "")
-                try:
-                    newpg.close()
-                except Exception:
-                    pass
-                if body:
-                    print(f"  🔎  '{lab}': captured {len(body)} bytes via route intercept")
-                    return body, url, ctype
-                if url and url.lower() != "about:blank":
-                    print(f"  ⚠️  '{lab}': tab opened ({url}) but no response body captured")
-            except Exception:
-                continue
     finally:
         try:
             ctx.unroute(pattern, handle_route)
@@ -3594,7 +3625,9 @@ def tameen_download_iran_documents(tameen_page, record_tag: str) -> dict:
             try:
                 resp = tameen_page.context.request.get(href)
                 if resp.ok:
-                    body, url, ctype = resp.body(), href, resp.headers.get("content-type", "")
+                    b, c = resp.body(), resp.headers.get("content-type", "")
+                    if _iran_is_real_doc(b, c):
+                        body, url, ctype = b, href, c
             except Exception:
                 pass
 
@@ -3689,26 +3722,35 @@ def iran_reveal_footer(page) -> None:
     the bottom; if a 'Next' is still below the visible area (short laptop screen),
     zoom the page out step by step until it fits. Independent belt-and-suspenders
     layer on top of maximizing the window."""
-    try:
-        page.evaluate(r"""() => {
-            const findNext = () => Array.from(document.querySelectorAll('button,a,input,span,div'))
-                .find(el => (el.innerText || el.value || '').trim() === 'Next');
-            const el = findNext();
-            if (!el) return;
-            // Absolute bottom of Next from the top of the document. On a 150%-scaled
-            // laptop this lands ~700px below the window AND past scrollHeight, so
-            // scrolling can't reach it — shrink the page so the whole form + footer
-            // fits the viewport, then scroll to the bottom. Floor at 0.4 (readable).
-            const absBottom = el.getBoundingClientRect().bottom + window.scrollY;
-            if (absBottom > window.innerHeight) {
-                const z = Math.max(0.4, (window.innerHeight - 24) / absBottom);
-                document.body.style.zoom = z;
-            }
-            window.scrollTo(0, document.body.scrollHeight);
-        }""")
-        page.wait_for_timeout(300)
-    except Exception:
-        pass
+    for _ in range(4):
+        try:
+            done = page.evaluate(r"""() => {
+                const findNext = () => Array.from(document.querySelectorAll('button,a,input,span,div'))
+                    .find(el => (el.innerText || el.value || '').trim() === 'Next');
+                let el = findNext();
+                if (!el) return true;   // nothing to reveal yet
+                // Undo any zoom from a previous pass so we measure the TRUE layout,
+                // then re-derive it — re-applying a compounded zoom is what let the
+                // bar drift back off-screen after React re-laid the form out.
+                document.body.style.zoom = '';
+                el = findNext();
+                const absBottom = el.getBoundingClientRect().bottom + window.scrollY;
+                // Aim the bar's bottom ~40px above the window floor so Next AND the
+                // Previous button beside it sit clearly on-screen, not jammed at the
+                // very edge. Floor the zoom at 0.4 so text stays readable.
+                if (absBottom > window.innerHeight - 40) {
+                    const z = Math.max(0.4, (window.innerHeight - 40) / absBottom);
+                    document.body.style.zoom = z;
+                }
+                window.scrollTo(0, document.body.scrollHeight);
+                const r = findNext().getBoundingClientRect();
+                return r.top >= 0 && r.bottom <= window.innerHeight;   // on-screen?
+            }""")
+            if done:
+                break
+        except Exception:
+            pass
+        page.wait_for_timeout(250)
 
 
 def _iran_wait_upload_committed(page, label: str, tries: int = 40) -> bool:
