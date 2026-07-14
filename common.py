@@ -3691,6 +3691,18 @@ def _iran_debug_footer(page) -> None:
                     if (out.footers.length >= 4) break;
                 }
             }
+            // Ancestor chain of Next: which element clips it below scrollHeight?
+            out.chain = [];
+            const nx = all.find(el => (el.innerText || el.value || '').trim() === 'Next');
+            let node = nx ? nx.parentElement : null;
+            for (let i = 0; i < 14 && node && node !== document.documentElement; i++) {
+                const cs = getComputedStyle(node);
+                out.chain.push({tag: node.tagName, cls: String(node.className).slice(0,40),
+                    overflowY: cs.overflowY, height: cs.height, maxHeight: cs.maxHeight,
+                    clientH: node.clientHeight, scrollH: node.scrollHeight,
+                    clips: node.scrollHeight > node.clientHeight + 2});
+                node = node.parentElement;
+            }
             return out;
         }""")
         lines.append(f"  window: innerW={info.get('innerW')} innerH={info.get('innerH')} "
@@ -3702,6 +3714,8 @@ def _iran_debug_footer(page) -> None:
             lines.append(f"    - {n}")
         for f in info.get("footers", []):
             lines.append(f"  footer-ish: {f}")
+        for c in info.get("chain", []):
+            lines.append(f"  ancestor{' ⛔CLIPS' if c.get('clips') else ''}: {c}")
         if not nexts:
             lines.append("  → No 'Next' element in the DOM at all → React unmounted the footer.")
     except Exception as e:
@@ -3717,34 +3731,56 @@ def _iran_debug_footer(page) -> None:
         pass
 
 
+def iran_unclip_footer(page) -> None:
+    """The real culprit (confirmed by the ancestor dump): BODY has
+    overflowY:hidden with the form (1388px) taller than the window (985px), so the
+    bottom of the form — the Next/Previous bar — is clipped off and plain scrolling
+    can't reach it. Force html/body to scroll normally and pad the bottom so, once
+    scrolled to, the bar clears the window's bottom edge instead of pinning flush
+    against it (where the taskbar/browser chrome hides it — that's the 'gone'
+    look). Safe: only relaxes overflow/height; iran_reveal_footer still shrinks-to-
+    fit as a fallback. ponytail: unclip body + pad; zoom reveal backstops."""
+    try:
+        page.evaluate(r"""() => {
+            for (const el of [document.documentElement, document.body]) {
+                el.style.setProperty('overflow-y', 'auto', 'important');
+                el.style.setProperty('height', 'auto', 'important');
+                el.style.setProperty('max-height', 'none', 'important');
+            }
+            // Room below the form so scrolling down leaves the bar off the edge.
+            document.body.style.paddingBottom = '160px';
+        }""")
+        page.wait_for_timeout(150)
+    except Exception:
+        pass
+
+
 def iran_reveal_footer(page) -> None:
-    """Make the bottom Next/Previous bar reachable no matter the screen. Scroll to
-    the bottom; if a 'Next' is still below the visible area (short laptop screen),
-    zoom the page out step by step until it fits. Independent belt-and-suspenders
-    layer on top of maximizing the window."""
-    for _ in range(4):
+    """Bring the Next/Previous bar fully on-screen, at FULL zoom when possible.
+    Unclip the page so it scrolls, then centre the bar in the viewport (never flush
+    at the edge, so text stays readable). Only if it's still cut off do we shrink
+    the whole form to fit. Re-applies until Next sits clear of both edges."""
+    iran_unclip_footer(page)
+    for _ in range(5):
         try:
             done = page.evaluate(r"""() => {
                 const findNext = () => Array.from(document.querySelectorAll('button,a,input,span,div'))
                     .find(el => (el.innerText || el.value || '').trim() === 'Next');
-                let el = findNext();
+                const el = findNext();
                 if (!el) return true;   // nothing to reveal yet
-                // Undo any zoom from a previous pass so we measure the TRUE layout,
-                // then re-derive it — re-applying a compounded zoom is what let the
-                // bar drift back off-screen after React re-laid the form out.
+                const visible = () => {
+                    const r = findNext().getBoundingClientRect();
+                    return r.top >= 30 && r.bottom <= window.innerHeight - 30;
+                };
+                // Preferred: full zoom, just centre the bar in the window.
                 document.body.style.zoom = '';
-                el = findNext();
-                const absBottom = el.getBoundingClientRect().bottom + window.scrollY;
-                // Aim the bar's bottom ~40px above the window floor so Next AND the
-                // Previous button beside it sit clearly on-screen, not jammed at the
-                // very edge. Floor the zoom at 0.4 so text stays readable.
-                if (absBottom > window.innerHeight - 40) {
-                    const z = Math.max(0.4, (window.innerHeight - 40) / absBottom);
-                    document.body.style.zoom = z;
-                }
-                window.scrollTo(0, document.body.scrollHeight);
-                const r = findNext().getBoundingClientRect();
-                return r.top >= 0 && r.bottom <= window.innerHeight;   // on-screen?
+                el.scrollIntoView({block: 'center'});
+                if (visible()) return true;
+                // Fallback: shrink the whole form so it fits, then centre again.
+                const absBottom = findNext().getBoundingClientRect().bottom + window.scrollY;
+                document.body.style.zoom = Math.max(0.4, (window.innerHeight - 80) / absBottom);
+                findNext().scrollIntoView({block: 'center'});
+                return visible();
             }""")
             if done:
                 break
