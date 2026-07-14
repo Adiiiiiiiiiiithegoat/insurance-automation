@@ -3014,6 +3014,9 @@ IRAN_PASSWORD = os.getenv("IRAN_PASSWORD", "")
 IRAN_LOGIN_URL        = "https://ecrm-portal.com:92/"
 IRAN_DASHBOARD_URL    = "https://ecrm-portal.com:92/User/Home/Dashboard"
 IRAN_STEP_PAUSE       = 700          # ms wait after each action; raise if fields get skipped
+IRAN_ACTION_TIMEOUT   = 4000         # ms cap per Playwright action; fail FAST on a field the
+                                     # form doesn't have (a record the wizard can't navigate
+                                     # must warn in seconds, not freeze on 30s defaults)
 IRAN_FIXED_MOBILE     = "99435202"   # always
 IRAN_FIXED_EMAIL      = "suad.alkalbani@tameen.om"   # always — overwrites the site default
 IRAN_FIXED_ADDRESS    = "Muscat"     # always
@@ -3082,18 +3085,21 @@ def iran_fill_by_label(page, label: str, value: str, press_escape: bool = False)
             f'xpath=//*[contains(normalize-space(text()),"{label}")]/following::input[not(@type="hidden")][1]'
         ).first,
     ]
+    t = IRAN_ACTION_TIMEOUT
     for g in getters:
         try:
             el = g()
-            if el.count() == 0:
+            # Guard on visibility (like the click helpers) so a hidden/detached
+            # match is skipped cheaply instead of eating the action timeout.
+            if el.count() == 0 or not el.is_visible():
                 continue
-            el.scroll_into_view_if_needed(timeout=10000)
-            el.click()
-            el.press("Control+a")
-            el.press("Backspace")
-            el.type(value, delay=20)
+            el.scroll_into_view_if_needed(timeout=t)
+            el.click(timeout=t)
+            el.press("Control+a", timeout=t)
+            el.press("Backspace", timeout=t)
+            el.type(value, delay=20, timeout=t)
             if press_escape:
-                el.press("Escape")
+                el.press("Escape", timeout=t)
             print(f"  ✅  Filled '{label}' = {value}")
             iran_settle(page)
             return True
@@ -3188,8 +3194,8 @@ def iran_select(page, label: str, option_text: str) -> bool:
 
     # Custom dropdown: open, (optional) search, click option.
     try:
-        control.scroll_into_view_if_needed(timeout=8000)
-        control.click()
+        control.scroll_into_view_if_needed(timeout=IRAN_ACTION_TIMEOUT)
+        control.click(timeout=IRAN_ACTION_TIMEOUT)
         page.wait_for_timeout(300)
         try:
             sb = page.locator('.select2-search__field, .select2-search input, input.select2-search__field').first
@@ -3203,8 +3209,8 @@ def iran_select(page, label: str, option_text: str) -> bool:
             opt = page.locator(f'xpath=//li[contains(normalize-space(.),"{option_text}")]').first
         if opt.count() == 0:
             opt = page.get_by_role("option", name=option_text, exact=False).first
-        opt.scroll_into_view_if_needed(timeout=8000)
-        opt.click()
+        opt.scroll_into_view_if_needed(timeout=IRAN_ACTION_TIMEOUT)
+        opt.click(timeout=IRAN_ACTION_TIMEOUT)
         print(f"  ✅  Selected '{label}' = {option_text}")
         iran_settle(page)
         return True
@@ -3304,8 +3310,8 @@ def iran_click_button(page, text: str) -> bool:
             el = g()
             if el.count() == 0 or not el.first.is_visible():
                 continue
-            el.first.scroll_into_view_if_needed(timeout=8000)
-            el.first.click()
+            el.first.scroll_into_view_if_needed(timeout=IRAN_ACTION_TIMEOUT)
+            el.first.click(timeout=IRAN_ACTION_TIMEOUT)
             print(f"  ✅  Clicked '{text}'")
             iran_settle(page)
             return True
