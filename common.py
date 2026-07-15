@@ -3014,9 +3014,15 @@ IRAN_PASSWORD = os.getenv("IRAN_PASSWORD", "")
 IRAN_LOGIN_URL        = "https://ecrm-portal.com:92/"
 IRAN_DASHBOARD_URL    = "https://ecrm-portal.com:92/User/Home/Dashboard"
 IRAN_STEP_PAUSE       = 700          # ms wait after each action; raise if fields get skipped
-IRAN_ACTION_TIMEOUT   = 4000         # ms cap per Playwright action; fail FAST on a field the
-                                     # form doesn't have (a record the wizard can't navigate
-                                     # must warn in seconds, not freeze on 30s defaults)
+IRAN_ACTION_TIMEOUT   = 25000        # ms cap per Playwright action. The is_visible() guard
+                                     # before each action is what prevents the multi-minute
+                                     # freeze on records the form lacks (absent field → skipped
+                                     # in ~0ms). This ceiling only applies to fields/buttons that
+                                     # ARE present, and it must be generous: Playwright auto-waits
+                                     # for IRAN's full-page ajax spinner (z-index 9999) to stop
+                                     # covering a button before it can click. A 4s cap starved
+                                     # that wait and made 'Next'/'Select Plan' fail right after a
+                                     # recalc — which cascaded the whole run onto hidden tabs.
 IRAN_FIXED_MOBILE     = "99435202"   # always
 IRAN_FIXED_EMAIL      = "suad.alkalbani@tameen.om"   # always — overwrites the site default
 IRAN_FIXED_ADDRESS    = "Muscat"     # always
@@ -4101,9 +4107,18 @@ def iran_fill_additional_details(page, policy_start_date, nationality, doc_paths
         page.wait_for_load_state("networkidle", timeout=10000)
     except Exception:
         pass
-    _iran_debug_footer(page)   # TEMP: state BEFORE reveal
-    iran_reveal_footer(page)   # scroll + zoom-out so the footer is on screen
-    _iran_debug_footer(page)   # TEMP: state AFTER reveal — did Next come on-screen?
+    iran_reveal_footer(page)   # bring the Next/Previous bar on-screen for the operator
+
+    # Nationality is the one mandatory field Tameen often can't supply. Clicking Next
+    # with it blank just trips IRAN's 'Nationality is mandatory' popup and leaves the
+    # page's grey spinner stuck behind it (looks like it's "loading" forever). So only
+    # advance when we actually set it; otherwise hand off cleanly — everything else is
+    # filled and the documents are uploaded, the operator just picks Nationality.
+    if not nationality:
+        print("\n  ⏸  Nationality is blank (none on the Tameen record). Everything else"
+              " is filled and the 4 documents are uploaded.")
+        print("     → Pick Nationality in the IRAN tab and click Next yourself.")
+        return
     if not iran_click_button(page, "Next"):
         # Last resort: click the Next element directly via JS even if Playwright
         # considers it off-screen/covered. Harmless if it isn't there.
